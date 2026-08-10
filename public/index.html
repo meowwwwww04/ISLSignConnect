@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <title>SignConnect — ISL Real-Time Communication</title>
+
+  <!-- Modern Fonts & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <!-- CSS Stylesheet -->
+  <link rel="stylesheet" href="css/style.css" />
+
+  <!-- MediaPipe CDN Dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <!-- Socket.IO Client -->
+
+<body class="mobile-app-body">
+
+  <!-- Mobile Shell Wrapper -->
+  <div class="mobile-app-frame">
+
+    <!-- Mobile Top App Header Bar -->
+    <header class="mobile-app-header">
+      <div class="header-brand">
+        <div class="app-logo-badge">
+          <span class="logo-icon">🤟</span>
+        </div>
+        <div class="brand-text">
+          <div class="app-title">SignConnect <span class="badge-pro">MOBILE</span></div>
+          <div class="app-subtitle">Real-Time ISL Translation</div>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div id="roomBadge" class="mobile-chip room-chip">
+          <span class="live-pulse"></span>
+          <span id="roomBadgeText">Offline</span>
+        </div>
+        <button id="roleBadge" class="mobile-chip role-chip" onclick="switchRole()" title="Tap to switch role">
+          Deaf User
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Mobile Viewport Stage -->
+    <main class="mobile-stage-container mode-pip" id="stageContainer">
+
+      <!-- Layout View Mode Switcher Header Pill -->
+      <div class="layout-toggle-bar">
+        <button id="btnToggleLayout" class="layout-mode-btn" onclick="toggleLayoutMode()"
+          title="Toggle Video Call Layout (PIP / Split Grid)">
+          <span id="layoutModeIcon">🖼️</span>
+          <span id="layoutModeLabel">Split Grid View</span>
+        </button>
+        <button id="btnSimulatePeer" class="layout-mode-btn alt" onclick="toggleSimulatedPeer()"
+          title="Simulate 2nd Camera Peer for testing">
+          <span>👥</span>
+          <span id="simulatePeerLabel">Demo 2nd Camera</span>
+        </button>
+      </div>
+
+      <!-- Primary Video Stage (Local Camera + MediaPipe Canvas Overlay) -->
+      <div class="mobile-video-card primary-feed" id="localVideoCard">
+        <video id="localVideo" class="video-feed" autoplay playsinline muted></video>
+        <canvas id="landmarkCanvas" class="landmark-overlay"></canvas>
+
+        <!-- Floating Live Detected Sign Chip Banner -->
+        <div id="gestureBanner" class="mobile-gesture-chip hidden">
+          <div class="chip-glow"></div>
+          <span class="gesture-icon">✨</span>
+          <div class="gesture-info">
+            <span class="gesture-meta">Recognized ISL Gesture</span>
+            <span id="gestureWord" class="gesture-title">Namaste</span>
+          </div>
+          <span id="gestureConfidence" class="confidence-pill">98%</span>
+        </div>
+
+        <!-- Local Feed Tag -->
+        <div class="feed-tag local-tag">
+          <span class="user-status-dot"></span>
+          <span id="localUserName">You (Deaf Mode)</span>
+        </div>
+      </div>
+
+      <!-- Secondary Remote Video PIP / Grid View (Floating Glass Box or Split Grid) -->
+      <div class="mobile-video-card pip-feed" id="remoteVideoCard" onclick="swapVideoFeeds()"
+        title="Click to swap video feeds">
+        <video id="remoteVideo" class="video-feed" autoplay playsinline></video>
+        <canvas id="simulatedPeerCanvas" class="video-feed hidden"></canvas>
+
+        <div id="remotePlaceholder" class="remote-placeholder">
+          <div class="placeholder-avatar">👤</div>
+          <div class="placeholder-text">Waiting for Peer...</div>
+          <div class="placeholder-sub">Join room in 2nd tab to connect call</div>
+        </div>
+
+        <div class="pip-tag">
+          <span id="remoteUserName">Peer (Waiting...)</span>
+        </div>
+      </div>
+
+      <!-- Hearing Speech-to-Text Subtitle Overlay (Appears on speech input) -->
+      <div id="deafLiveSubtitles" class="mobile-subtitle-card hidden">
+        <div class="subtitle-header-line">
+          <span class="mic-wave-icon">🎙️</span>
+          <span>HEARING SPEECH SUBTITLES</span>
+        </div>
+        <div id="subtitleText" class="subtitle-content">Listening for spoken words...</div>
+      </div>
+
+      <!-- Live Signs Ticker Ribbon -->
+      <div class="mobile-ticker-ribbon">
+        <div class="ribbon-label">⚡ RECENT SIGNS:</div>
+        <div id="signTickerContainer" class="ribbon-chips">
+          <span class="ribbon-chip placeholder">Ready for gesture input</span>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- Mobile Navigation & Bottom Drawer Tabs Bar -->
+    <nav class="mobile-nav-tabs">
+      <button class="nav-tab-btn active" id="tabMainBtn" onclick="switchMobileTab('stage')">
+        <span class="tab-icon">📹</span>
+        <span class="tab-label">Camera</span>
+      </button>
+
+      <button class="nav-tab-btn" id="tabPracticeBtn" onclick="switchMobileTab('practice')">
+        <span class="tab-icon">🇮🇳</span>
+        <span class="tab-label">ISL Signs</span>
+      </button>
+
+      <button class="nav-tab-btn" id="tabLogsBtn" onclick="switchMobileTab('logs')">
+        <span class="tab-icon">💬</span>
+        <span class="tab-label">Transcripts</span>
+      </button>
+
+      <button class="nav-tab-btn" id="tabRenderBtn" onclick="switchMobileTab('render')">
+        <span class="tab-icon">🤖</span>
+        <span class="tab-label">Avatar</span>
+      </button>
+    </nav>
+
+    <!-- Floating Action Control Dock (Camera / Mic / Skeleton / Role / Leave) -->
+    <div class="mobile-action-dock">
+      <button id="btnMic" class="dock-btn active" title="Toggle Microphone">🎙️</button>
+      <button id="btnCam" class="dock-btn active" title="Toggle Camera">📹</button>
+      <button id="btnSkeleton" class="dock-btn active" title="Toggle Hand Landmarks">🦴</button>
+      <button id="btnSpeech" class="dock-btn active" title="Toggle Speech-to-Text">🗣️</button>
+      <button id="btnSwitchRole" class="dock-btn" title="Switch Role">🔄</button>
+      <button id="btnLeave" class="dock-btn danger" title="Leave Session">🚪</button>
+    </div>
+
+    <!-- Mobile Drawer Overlay Sheets -->
+    <div id="practiceDrawer" class="mobile-drawer hidden">
+      <div class="drawer-header">
+        <div class="drawer-title">🇮🇳 ISL Quick Gesture Simulator</div>
+        <button class="drawer-close-btn" onclick="switchMobileTab('stage')">✕</button>
+      </div>
+      <div class="drawer-body">
+        <p class="drawer-hint">Tap any ISL word to trigger gesture recognition and avatar animation:</p>
+        <div class="practice-buttons-grid">
+          <button class="btn-isl-test" onclick="simulateISLSign('namaste', 'Namaste / Hello (ISL)')">🙏 Namaste</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('house', 'House / Building (ISL)')">🏠 House</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('book', 'Book / Read (ISL)')">📖 Book</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('help', 'Help / Sahayata (ISL)')">🆘 Help</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('time', 'Time / Samay (ISL)')">⏱️ Time</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('food', 'Food / Eat (ISL)')">🍲 Food</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('water', 'Water / Pani (ISL)')">🚰 Water</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('love', 'Love / Respect (ISL)')">❤️ Love</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('yes', 'Yes / Haan (ISL)')">👍 Yes</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('no', 'No / Nahi (ISL)')">👎 No</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('stop', 'Stop / Ruko (ISL)')">✋ Stop</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('A', 'ISL Letter A')">🔤 A</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('E', 'ISL Letter E')">🔤 E</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('I', 'ISL Letter I')">🔤 I</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('O', 'ISL Letter O')">🔤 O</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('U', 'ISL Letter U')">🔤 U</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="logsDrawer" class="mobile-drawer hidden">
+      <div class="drawer-header">
+        <div class="drawer-title">💬 Live ISL Transcripts</div>
+        <button class="drawer-close-btn" onclick="switchMobileTab('stage')">✕</button>
+      </div>
+      <div class="drawer-body">
+        <div id="transcriptBox" class="transcript-box">
+          <div class="transcript-entry system">
+            <div class="entry-sender">
+              <span>SignConnect System</span>
+              <span>Now</span>
+            </div>
+            <div class="entry-text">
+              Welcome to SignConnect Mobile! Authentic Indian Sign Language (ISL) gestures and speech transcripts will
+              appear here.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="renderDrawer" class="mobile-drawer hidden">
+      <div class="drawer-header">
+        <div class="drawer-title">🤖 ISL Sign Renderer</div>
+        <button class="drawer-close-btn" onclick="switchMobileTab('stage')">✕</button>
+      </div>
+      <div class="drawer-body">
+        <div id="signPlayerContainer"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Join Room Mobile Modal Overlay -->
+  <div id="joinModal" class="modal-overlay">
+    <div class="mobile-modal-card">
+      <div class="modal-brand-header">
+        <div class="modal-logo">🤟</div>
+        <h2>SignConnect</h2>
+        <p>Real-time two-way ISL communication mobile app</p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Room Identifier Code</label>
+        <input type="text" id="inputRoomId" class="form-input" value="signconnect-room" placeholder="e.g. room-101" />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Choose Primary Role</label>
+        <div class="role-selector">
+          <div class="role-card selected" id="roleDeafCard" onclick="selectRole('deaf')">
+            <div class="role-icon">🤟</div>
+            <div class="role-name">Deaf Mode</div>
+            <div class="role-desc">Gesture input → Speech/Text for peer</div>
+          </div>
+
+          <div class="role-card" id="roleHearingCard" onclick="selectRole('hearing')">
+            <div class="role-icon">🎧</div>
+            <div class="role-name">Hearing Mode</div>
+            <div class="role-desc">Speech input → Subtitles/ISL sign avatar</div>
+          </div>
+        </div>
+      </div>
+
+      <button id="btnJoinRoom" class="btn-primary-mobile">Launch SignConnect</button>
+    </div>
+  </div>
+
+  <!-- JavaScript Modules -->
+  <script src="js/sign-database.js"></script>
+  <script src="js/gesture-recognition.js"></script>
+  <script src="js/sign-renderer.js"></script>
+  <script src="js/webrtc.js"></script>
+  <script src="js/app.js"></script>
+</body>
+
+</html>

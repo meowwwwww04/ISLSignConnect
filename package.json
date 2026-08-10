@@ -1,0 +1,24 @@
+{
+  "name": "signconnect-isl-app",
+  "version": "1.0.0",
+  "description": "SignConnect: Real-Time Two-Way ISL Communication Mobile App using MediaPipe and WebRTC",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "isl",
+    "sign-language",
+    "webrtc",
+    "mediapipe",
+    "accessibility"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

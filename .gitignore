@@ -1,0 +1,17 @@
+# Dataset and tool directories
+data/
+tools/include-repo/
+tools/venv/
+.venv/
+venv/
+
+# Node dependencies
+node_modules/
+npm-debug.log*
+
+# Environment and temp files
+.env
+.DS_Store
+*.log
+__pycache__/
+*.pyc
