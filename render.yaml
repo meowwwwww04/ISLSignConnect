@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: signconnect
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: METERED_API_KEY
+        sync: false  # Set in Render dashboard after metered.ca signup
+      - key: METERED_API_URL
+        value: https://aiml_project.metered.live/api/v1/turn/credentials
