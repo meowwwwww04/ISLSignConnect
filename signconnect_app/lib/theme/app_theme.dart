@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 class AppTheme {
   // Color Palette inspired by the UI design mockups
   static const Color bgCream = Color(0xFFFDFBF7);
+  static const Color bgDark = Color(0xFF0F172A);
   static const Color bgCard = Color(0xFFFFFFFF);
   static const Color bgCardSecondary = Color(0xFFFAF6F0);
   

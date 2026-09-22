@@ -1,5 +1,5 @@
 /**
- * SignConnect — Main Mobile Application Orchestrator & Controller
+ * SignConnect — Main Application Controller
  */
 
 let currentRole = "deaf";
@@ -21,17 +21,14 @@ let speechSynthesis = window.speechSynthesis;
 let detectedSignsTickerList = [];
 
 // -------------------------------------------------------------
-// Initialization on DOM Loaded
+// Initialization
 // -------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
-  initClassifierAndRenderer();
-  initUIEventListeners();
-});
-
-function initClassifierAndRenderer() {
+  console.log("[App] SignConnect initialized");
   gestureClassifier = new ISLGestureClassifier();
   signRenderer = new ISLSignRenderer("signPlayerContainer");
-}
+  initUIEventListeners();
+});
 
 function selectRole(role) {
   currentRole = role;
@@ -103,59 +100,76 @@ function switchMobileTab(tabName) {
 }
 
 // -------------------------------------------------------------
-// Join Call Room Handler
+// Join Call Room
 // -------------------------------------------------------------
 async function joinCallRoom() {
   const roomIdInput = document.getElementById("inputRoomId").value.trim();
   if (roomIdInput) currentRoomId = roomIdInput;
 
-  // Hide Modal
+  console.log("[App] Joining room:", currentRoomId, "as", currentRole);
+
   const modal = document.getElementById("joinModal");
   if (modal) modal.style.display = "none";
 
-  // Update UI Badges
   const roomBadgeText = document.getElementById("roomBadgeText");
-  if (roomBadgeText) roomBadgeText.textContent = `${currentRoomId}`;
+  if (roomBadgeText) roomBadgeText.textContent = currentRoomId;
 
   const roleBadge = document.getElementById("roleBadge");
-  if (roleBadge) roleBadge.textContent = `${currentRole === 'deaf' ? 'Deaf User' : 'Hearing User'}`;
+  if (roleBadge) roleBadge.textContent = currentRole === 'deaf' ? 'Deaf User' : 'Hearing User';
 
   const localUserName = document.getElementById("localUserName");
   if (localUserName) localUserName.textContent = `You (${currentRole === 'deaf' ? 'Deaf Mode' : 'Hearing Mode'})`;
 
   // Start Camera & Microphone
   try {
+    console.log("[App] Requesting camera and microphone access...");
     localStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480 },
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
       audio: true
     });
+    console.log("[App] Camera and microphone access granted");
     const localVideo = document.getElementById("localVideo");
-    if (localVideo) localVideo.srcObject = localStream;
+    if (localVideo) {
+      localVideo.srcObject = localStream;
+    }
   } catch (err) {
-    console.warn("Camera/Mic access notice:", err);
+    console.error("[App] Camera/Mic access error:", err.message);
+    addTranscriptEntry("System", `Camera/microphone access denied: ${err.message}`);
+    // Try video-only as fallback
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const localVideo = document.getElementById("localVideo");
+      if (localVideo) localVideo.srcObject = localStream;
+    } catch (e) {
+      console.error("[App] Video-only fallback also failed:", e.message);
+    }
   }
 
   // Initialize WebRTC Signaling Manager
   webrtcManager = new SignConnectWebRTC({
     role: currentRole,
     onRemoteStream: (stream) => {
+      console.log("[App] Remote stream connected!");
       const remoteVideo = document.getElementById("remoteVideo");
       const placeholder = document.getElementById("remotePlaceholder");
       if (remoteVideo) {
         remoteVideo.srcObject = stream;
         remoteVideo.classList.remove("hidden");
+        // Ensure audio plays for remote stream
+        remoteVideo.volume = 1.0;
+        remoteVideo.muted = false;
       }
       if (placeholder) placeholder.style.display = "none";
     },
     onUserJoined: (user) => {
-      addTranscriptEntry("System", `Participant joined room as ${user.role}`);
+      addTranscriptEntry("System", `Peer joined room as ${user.role}`);
       const remoteUserName = document.getElementById("remoteUserName");
       if (remoteUserName) remoteUserName.textContent = `Peer (${user.role === 'deaf' ? 'Deaf' : 'Hearing'})`;
       const placeholder = document.getElementById("remotePlaceholder");
       if (placeholder) placeholder.style.display = "none";
     },
     onUserLeft: (userId) => {
-      addTranscriptEntry("System", `Participant left call`);
+      addTranscriptEntry("System", `Peer left call`);
       const remoteVideo = document.getElementById("remoteVideo");
       if (remoteVideo) remoteVideo.srcObject = null;
       const remoteUserName = document.getElementById("remoteUserName");
@@ -167,11 +181,10 @@ async function joinCallRoom() {
       addTranscriptEntry("Deaf Peer (ISL Sign)", `${data.word.toUpperCase()} (${data.confidence}%)`, "deaf");
       showGestureBanner(data.word, data.confidence);
       addSignToTicker(data.word);
-      speakTTS(`Recognized ISL Sign: ${data.word}`);
+      speakTTS(`Recognized sign: ${data.word}`);
     },
     onSpeechReceived: (data) => {
       updateDeafSubtitleBox(data.text);
-
       if (data.isFinal) {
         addTranscriptEntry("Hearing Peer (Speech)", data.text, "hearing");
         if (signRenderer) signRenderer.processSpeechText(data.text);
@@ -181,11 +194,13 @@ async function joinCallRoom() {
 
   await webrtcManager.joinRoom(currentRoomId, currentRole, localStream);
 
-  // Initialize MediaPipe Tracking Loop
+  // Initialize MediaPipe Hands for ISL detection
   initMediaPipeHands();
 
-  // Initialize Speech Recognition for Hearing user
+  // Initialize Speech Recognition for hearing user
   initSpeechRecognition();
+
+  addTranscriptEntry("System", `Joined room "${currentRoomId}" as ${currentRole}`);
 }
 
 // -------------------------------------------------------------
@@ -194,52 +209,65 @@ async function joinCallRoom() {
 function initMediaPipeHands() {
   const videoElement = document.getElementById("localVideo");
   const canvasElement = document.getElementById("landmarkCanvas");
-  if (!canvasElement) return;
+  if (!canvasElement || !videoElement) return;
 
   const canvasCtx = canvasElement.getContext("2d");
 
-  canvasElement.width = 640;
-  canvasElement.height = 480;
-
-  mediaPipeHands = new Hands({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-  });
-
-  mediaPipeHands.setOptions({
-    maxNumHands: 2,
-    modelComplexity: 1,
-    minDetectionConfidence: 0.5,
-    minTrackingConfidence: 0.5
-  });
-
-  mediaPipeHands.onResults((results) => {
-    canvasCtx.save();
-    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-
-    if (isSkeletonActive && results.multiHandLandmarks) {
-      for (const landmarks of results.multiHandLandmarks) {
-        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, { color: "#38bdf8", lineWidth: 2 });
-        drawLandmarks(canvasCtx, landmarks, { color: "#f43f5e", lineWidth: 1, radius: 3 });
-      }
+  // Match canvas to video dimensions
+  function resizeCanvas() {
+    if (videoElement.videoWidth > 0) {
+      canvasElement.width = videoElement.videoWidth;
+      canvasElement.height = videoElement.videoHeight;
     }
-    canvasCtx.restore();
+  }
+  videoElement.addEventListener("loadedmetadata", resizeCanvas);
 
-    // Fast IEEE ISL classification on landmark data
-    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-      const gestureResult = gestureClassifier.classify(results.multiHandLandmarks);
+  try {
+    mediaPipeHands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
 
-      if (gestureResult) {
-        console.log("IEEE ISL Gesture Recognized:", gestureResult);
-        showGestureBanner(gestureResult.label, gestureResult.confidence);
-        addSignToTicker(gestureResult.label);
-        addTranscriptEntry("You (ISL Sign)", `${gestureResult.label} (${gestureResult.confidence}%)`, "deaf");
+    mediaPipeHands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.5
+    });
 
-        if (webrtcManager) {
-          webrtcManager.sendGesture(gestureResult.word, gestureResult.confidence);
+    mediaPipeHands.onResults(async (results) => {
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      if (isSkeletonActive && results.multiHandLandmarks) {
+        for (const landmarks of results.multiHandLandmarks) {
+          drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, { color: "#38bdf8", lineWidth: 2 });
+          drawLandmarks(canvasCtx, landmarks, { color: "#f43f5e", lineWidth: 1, radius: 3 });
         }
       }
-    }
-  });
+      canvasCtx.restore();
+
+      // ISL classification on detected hands
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const gestureResult = await gestureClassifier.classify(results.multiHandLandmarks);
+
+        if (gestureResult) {
+          console.log("[App] ISL Gesture recognized:", gestureResult.label);
+          showGestureBanner(gestureResult.label, gestureResult.confidence);
+          addSignToTicker(gestureResult.label);
+          addTranscriptEntry("You (ISL Sign)", `${gestureResult.label} (${gestureResult.confidence}%)`, "deaf");
+
+          // Send to peer
+          if (webrtcManager) {
+            webrtcManager.sendGesture(gestureResult.word, gestureResult.confidence);
+          }
+        }
+      }
+    });
+
+    console.log("[App] MediaPipe Hands initialized successfully");
+  } catch (err) {
+    console.error("[App] MediaPipe Hands initialization error:", err);
+  }
 
   let isProcessingFrame = false;
   async function processNativeCameraFrame() {
@@ -248,7 +276,7 @@ function initMediaPipeHands() {
       try {
         await mediaPipeHands.send({ image: videoElement });
       } catch (err) {
-        console.warn("MediaPipe frame send notice:", err);
+        console.warn("[App] MediaPipe frame error:", err.message);
       }
       isProcessingFrame = false;
     }
@@ -259,11 +287,11 @@ function initMediaPipeHands() {
 }
 
 // -------------------------------------------------------------
-// Simulation & Quick Test Function for ISL Signs
+// Simulate ISL Sign (for testing / practice drawer)
 // -------------------------------------------------------------
 function simulateISLSign(word, label) {
   const displayLabel = label || word.toUpperCase();
-  console.log("Simulating IEEE ISL Sign:", word);
+  console.log("[App] Simulating ISL Sign:", word);
 
   showGestureBanner(displayLabel, 98);
   addSignToTicker(displayLabel);
@@ -279,59 +307,82 @@ function simulateISLSign(word, label) {
 }
 
 // -------------------------------------------------------------
-// Speech Recognition (Hearing Speech -> Text Subtitles)
+// Speech Recognition (Hearing Speech -> Text)
 // -------------------------------------------------------------
 function initSpeechRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
-    console.warn("Web Speech API is not supported in this browser.");
+    console.warn("[App] Web Speech API not supported in this browser");
+    addTranscriptEntry("System", "Speech recognition not supported in this browser. Try Chrome.");
     return;
   }
 
-  speechRecognition = new SpeechRecognition();
-  speechRecognition.continuous = true;
-  speechRecognition.interimResults = true;
-  speechRecognition.lang = "en-IN";
-
-  speechRecognition.onresult = (event) => {
-    let interimText = "";
-    let finalText = "";
-
-    for (let i = event.resultIndex; i < event.results.length; ++i) {
-      if (event.results[i].isFinal) {
-        finalText += event.results[i][0].transcript;
-      } else {
-        interimText += event.results[i][0].transcript;
-      }
+  function startRecognition() {
+    if (speechRecognition) {
+      try { speechRecognition.stop(); } catch(e) {}
     }
 
-    if (interimText.trim()) {
-      updateDeafSubtitleBox(interimText);
-      if (webrtcManager) {
-        webrtcManager.sendSpeechTranscript(interimText, false);
+    speechRecognition = new SpeechRecognition();
+    speechRecognition.continuous = true;
+    speechRecognition.interimResults = true;
+    speechRecognition.lang = "en-IN";
+
+    speechRecognition.onresult = (event) => {
+      let interimText = "";
+      let finalText = "";
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalText += event.results[i][0].transcript;
+        } else {
+          interimText += event.results[i][0].transcript;
+        }
       }
-    }
 
-    if (finalText.trim()) {
-      updateDeafSubtitleBox(finalText);
-      addTranscriptEntry("You (Speech)", finalText, "hearing");
-      if (signRenderer) signRenderer.processSpeechText(finalText);
-
-      if (webrtcManager) {
-        webrtcManager.sendSpeechTranscript(finalText, true);
+      if (interimText.trim()) {
+        updateDeafSubtitleBox(interimText);
+        if (webrtcManager) {
+          webrtcManager.sendSpeechTranscript(interimText, false);
+        }
       }
-    }
-  };
 
-  speechRecognition.onerror = (err) => {
-    console.warn("Speech recognition notice:", err.error);
-  };
+      if (finalText.trim()) {
+        updateDeafSubtitleBox(finalText);
+        addTranscriptEntry("You (Speech)", finalText, "hearing");
+        if (signRenderer) signRenderer.processSpeechText(finalText);
 
-  if (isSpeechActive) {
+        if (webrtcManager) {
+          webrtcManager.sendSpeechTranscript(finalText, true);
+        }
+      }
+    };
+
+    speechRecognition.onerror = (err) => {
+      console.warn("[App] Speech recognition error:", err.error);
+      if (err.error === "no-speech" || err.error === "audio-capture") {
+        // Restart recognition after a brief pause
+        setTimeout(() => {
+          if (isSpeechActive) startRecognition();
+        }, 1000);
+      }
+    };
+
+    speechRecognition.onend = () => {
+      console.log("[App] Speech recognition ended, restarting...");
+      if (isSpeechActive) {
+        setTimeout(() => startRecognition(), 500);
+      }
+    };
+
     try {
       speechRecognition.start();
-    } catch (e) {}
+      console.log("[App] Speech recognition started");
+    } catch (e) {
+      console.warn("[App] Could not start speech recognition:", e.message);
+    }
   }
+
+  startRecognition();
 }
 
 function updateDeafSubtitleBox(text) {
@@ -368,7 +419,7 @@ function speakTTS(text) {
 }
 
 // -------------------------------------------------------------
-// UI Control Functions
+// UI Controls
 // -------------------------------------------------------------
 function showGestureBanner(word, confidence) {
   const banner = document.getElementById("gestureBanner");
@@ -382,7 +433,7 @@ function showGestureBanner(word, confidence) {
     clearTimeout(window.bannerTimeout);
     window.bannerTimeout = setTimeout(() => {
       banner.classList.add("hidden");
-    }, 2500);
+    }, 3000);
   }
 }
 
@@ -443,7 +494,7 @@ function toggleSpeechSTT() {
     if (isSpeechActive) {
       try { speechRecognition.start(); } catch(e){}
     } else {
-      speechRecognition.stop();
+      try { speechRecognition.stop(); } catch(e){}
     }
   }
 }
@@ -453,16 +504,16 @@ function switchRole() {
   selectRole(currentRole);
 
   const roleBadge = document.getElementById("roleBadge");
-  if (roleBadge) roleBadge.textContent = `${currentRole === 'deaf' ? 'Deaf User' : 'Hearing User'}`;
+  if (roleBadge) roleBadge.textContent = currentRole === 'deaf' ? 'Deaf User' : 'Hearing User';
 
   const localUserName = document.getElementById("localUserName");
   if (localUserName) localUserName.textContent = `You (${currentRole === 'deaf' ? 'Deaf Mode' : 'Hearing Mode'})`;
 
-  addTranscriptEntry("System", `Switched your active role to ${currentRole.toUpperCase()}`);
+  addTranscriptEntry("System", `Switched role to ${currentRole.toUpperCase()}`);
 }
 
 function leaveCall() {
-  if (confirm("Are you sure you want to exit SignConnect Mobile session?")) {
+  if (confirm("Are you sure you want to leave SignConnect?")) {
     window.location.reload();
   }
 }
@@ -488,13 +539,11 @@ function toggleLayoutMode() {
     stage.classList.add("mode-grid");
     if (icon) icon.textContent = "🔲";
     if (label) label.textContent = "PIP Float View";
-    addTranscriptEntry("System", "Switched to Dual Camera Split Grid View (50/50 Call)");
   } else {
     stage.classList.remove("mode-grid");
     stage.classList.add("mode-pip");
     if (icon) icon.textContent = "🖼️";
     if (label) label.textContent = "Split Grid View";
-    addTranscriptEntry("System", "Switched to PIP Picture-in-Picture View");
   }
 }
 
@@ -532,14 +581,12 @@ function toggleSimulatedPeer() {
     if (remoteUserName) remoteUserName.textContent = "Demo Peer (2nd Camera)";
     if (label) label.textContent = "Stop Demo";
     startSimulatedPeerCanvas();
-    addTranscriptEntry("System", "Activated Simulated 2nd Peer Camera Video Stream");
   } else {
     if (simCanvas) simCanvas.classList.add("hidden");
     if (placeholder && !webrtcManager?.remoteStream) placeholder.style.display = "flex";
     if (remoteUserName) remoteUserName.textContent = "Peer (Waiting...)";
     if (label) label.textContent = "Demo 2nd Camera";
     if (peerAnimFrame) cancelAnimationFrame(peerAnimFrame);
-    addTranscriptEntry("System", "Deactivated Demo 2nd Camera Stream");
   }
 }
 
@@ -555,14 +602,12 @@ function startSimulatedPeerCanvas() {
     if (!isSimulatedPeerActive) return;
     angle += 0.04;
 
-    // Background gradient
     const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
     grad.addColorStop(0, "#0f172a");
     grad.addColorStop(1, "#1e293b");
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Grid lines
     ctx.strokeStyle = "rgba(56, 189, 248, 0.1)";
     ctx.lineWidth = 1;
     for (let x = 0; x < canvas.width; x += 30) {
@@ -572,23 +617,19 @@ function startSimulatedPeerCanvas() {
       ctx.stroke();
     }
 
-    // Avatar silhouette / simulated person hands moving in ISL gesture
     const centerX = canvas.width / 2;
     const centerY = canvas.height / 2 + 30;
 
-    // Body
     ctx.fillStyle = "#334155";
     ctx.beginPath();
     ctx.arc(centerX, centerY + 80, 70, 0, Math.PI * 2);
     ctx.fill();
 
-    // Head
     ctx.fillStyle = "#475569";
     ctx.beginPath();
     ctx.arc(centerX, centerY - 20, 35, 0, Math.PI * 2);
     ctx.fill();
 
-    // Waving Hands (Simulating ISL sign motion)
     const hand1X = centerX - 50 + Math.sin(angle * 2) * 20;
     const hand1Y = centerY - 10 + Math.cos(angle * 2) * 15;
     const hand2X = centerX + 50 - Math.sin(angle * 2) * 20;
@@ -600,11 +641,10 @@ function startSimulatedPeerCanvas() {
     ctx.arc(hand2X, hand2Y, 14, 0, Math.PI * 2);
     ctx.fill();
 
-    // Text Badge on Video
     ctx.fillStyle = "#f8fafc";
     ctx.font = "bold 13px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("LIVE PEER VIDEO STREAM (ISL)", centerX, 30);
+    ctx.fillText("DEMO PEER VIDEO (ISL)", centerX, 30);
 
     peerAnimFrame = requestAnimationFrame(renderPeerFrame);
   }

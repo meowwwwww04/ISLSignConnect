@@ -92,8 +92,24 @@ class ISLSignRenderer {
   processSpeechText(text) {
     if (!text || text.trim() === "") return;
 
-    const cleaned = text.toLowerCase().replace(/[^a-z0-9\s]/g, "");
-    const words = cleaned.split(/\s+/);
+    const cleaned = text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+    if (!cleaned) return;
+
+    const words = cleaned.split(/\s+/).filter(Boolean);
+
+    // Match multi-word phrases (e.g. "thank you") before per-word lookup
+    for (let i = 0; i < words.length - 1; i++) {
+      const phrase = `${words[i]} ${words[i + 1]}`;
+      if (ISL_DATABASE.vocabulary[phrase]) {
+        this.queue.push({
+          type: "vocabulary",
+          key: phrase,
+          data: ISL_DATABASE.vocabulary[phrase]
+        });
+        words.splice(i, 2, null);
+        break;
+      }
+    }
 
     for (const word of words) {
       if (!word) continue;

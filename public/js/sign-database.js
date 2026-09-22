@@ -154,7 +154,49 @@ const ISL_DATABASE = {
       handCount: 1,
       vectorAnimation: "stop"
     },
+"thank you": {
+      label: "Thank You / Dhanyawad (ISL)",
+      category: "Polite Expressions",
+      description: "Dominant hand touches chin/forehead and moves to non-dominant open palm",
+      handCount: 2,
+      vectorAnimation: "thank_you"
+    },
+    "thanks": {
+      label: "Thank You (ISL)",
+      category: "Polite Expressions",
+      description: "Dominant hand touches chin and moves to non-dominant open palm",
+      handCount: 2,
+      vectorAnimation: "thank_you"
+    },
     "please": {
+      label: "Please / Kripya (ISL)",
+      category: "Polite Expressions",
+      description: "Flat open palm resting over chest area",
+      handCount: 1,
+      vectorAnimation: "help"
+    },
+    "good": {
+      label: "Good / Achha (ISL)",
+      category: "Responses",
+      description: "Thumb up gesture with closed fist",
+      handCount: 1,
+      vectorAnimation: "yes"
+    },
+    "bad": {
+      label: "Bad / Bura (ISL)",
+      category: "Responses",
+      description: "Thumb down gesture",
+      handCount: 1,
+      vectorAnimation: "no"
+    },
+    "stop": {
+      label: "Stop / Ruko (ISL)",
+      category: "Commands",
+      description: "Flat open palm facing forward towards recipient",
+      handCount: 1,
+      vectorAnimation: "stop"
+    },,
+    "please_OLD": {
       label: "Please / Kripya (ISL)",
       category: "Polite Expressions",
       description: "Flat open palm resting over chest area",

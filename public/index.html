@@ -11,6 +11,9 @@
 
   <title>SignConnect — ISL Real-Time Communication</title>
 
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="images/app_logo.png" />
+
   <!-- Modern Fonts & Icons -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,6 +30,8 @@
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
   <!-- Socket.IO Client -->
+  <script src="/socket.io/socket.io.js" crossorigin="anonymous"></script>
+</head>
 
 <body class="mobile-app-body">
 
@@ -37,7 +42,7 @@
     <header class="mobile-app-header">
       <div class="header-brand">
         <div class="app-logo-badge">
-          <span class="logo-icon">🤟</span>
+          <img src="images/app_logo.png" alt="SignConnect Logo" />
         </div>
         <div class="brand-text">
           <div class="app-title">SignConnect <span class="badge-pro">MOBILE</span></div>
@@ -185,6 +190,10 @@
           <button class="btn-isl-test" onclick="simulateISLSign('yes', 'Yes / Haan (ISL)')">👍 Yes</button>
           <button class="btn-isl-test" onclick="simulateISLSign('no', 'No / Nahi (ISL)')">👎 No</button>
           <button class="btn-isl-test" onclick="simulateISLSign('stop', 'Stop / Ruko (ISL)')">✋ Stop</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('thankyou', 'Thank You (ISL)')">🙏 Thank You</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('please', 'Please (ISL)')">🤲 Please</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('good', 'Good (ISL)')">👍 Good</button>
+          <button class="btn-isl-test" onclick="simulateISLSign('bad', 'Bad (ISL)')">👎 Bad</button>
           <button class="btn-isl-test" onclick="simulateISLSign('A', 'ISL Letter A')">🔤 A</button>
           <button class="btn-isl-test" onclick="simulateISLSign('E', 'ISL Letter E')">🔤 E</button>
           <button class="btn-isl-test" onclick="simulateISLSign('I', 'ISL Letter I')">🔤 I</button>
@@ -231,7 +240,7 @@
   <div id="joinModal" class="modal-overlay">
     <div class="mobile-modal-card">
       <div class="modal-brand-header">
-        <div class="modal-logo">🤟</div>
+        <div class="modal-logo"><img src="images/app_logo.png" alt="SignConnect" /></div>
         <h2>SignConnect</h2>
         <p>Real-time two-way ISL communication mobile app</p>
       </div>

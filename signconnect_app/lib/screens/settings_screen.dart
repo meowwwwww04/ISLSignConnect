@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../theme/app_theme.dart';
 import '../widgets/team_card.dart';
+import '../services/auth_service.dart';
 import '../services/socket_service.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  final VoidCallback? onLogout;
+
+  const SettingsScreen({super.key, this.onLogout});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -13,6 +16,89 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final SocketService _socket = SocketService();
+  final AuthService _auth = AuthService();
+
+  final _nameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _locationController = TextEditingController();
+  final _bioController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAccountIntoControllers();
+  }
+
+  void _loadAccountIntoControllers() {
+    final account = _auth.currentAccount;
+    _nameController.text = account?.name ?? _socket.userName;
+    _emailController.text = account?.email ?? _socket.userEmail;
+    _phoneController.text = account?.phone ?? "";
+    _locationController.text = account?.location ?? "";
+    _bioController.text = account?.bio ?? "";
+  }
+
+  Future<void> _saveProfileEdits({AppRole? newRole}) async {
+    final updated = await _auth.updateProfile(
+      name: _nameController.text,
+      email: _emailController.text,
+      phone: _phoneController.text,
+      location: _locationController.text,
+      bio: _bioController.text,
+      role: newRole,
+      micSensitivity: _socket.micSensitivity,
+      vocabularyFocus: _socket.vocabularyFocus,
+    );
+    if (!mounted) return;
+    if (updated != null) {
+      _socket.updateUserProfile(
+        name: updated.name,
+        email: updated.email,
+        role: updated.role,
+        micSensitivity: updated.micSensitivity,
+        vocabularyFocus: updated.vocabularyFocus,
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Profile saved for ${updated.name}"),
+          backgroundColor: AppTheme.accentGreen,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Sign in to save profile changes.")),
+      );
+    }
+  }
+
+  Future<void> _confirmLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text("Log out?", style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+        content: Text(
+          "You will need to sign in again to access your account.",
+          style: GoogleFonts.plusJakartaSans(fontSize: 13, color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancel")),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Log Out"),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await AuthService().signOut();
+      if (widget.onLogout != null) widget.onLogout!();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -72,6 +158,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
 
                       const SizedBox(height: 32),
+
+                      // Section 0: My Account (editable profile)
+                      _buildAccountSection(),
+
+                      const SizedBox(height: 40),
 
                       // Section 1: Hardware & Preferences
                       Row(
@@ -271,6 +362,221 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildAccountSection() {
+    final account = _auth.currentAccount;
+    final name = account?.name ?? "Guest User";
+    final email = account?.email ?? "guest@signconnect.local";
+    final initials = name.trim().split(RegExp(r'\s+')).map((w) => w[0]).take(2).join().toUpperCase();
+
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            AppTheme.brandOrange.withValues(alpha: 0.12),
+            AppTheme.bgCard,
+          ],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppTheme.brandOrange.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.account_circle_outlined, color: AppTheme.brandOrange, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                "My Account",
+                style: GoogleFonts.outfit(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _showEditAccountSheet,
+                icon: const Icon(Icons.edit_outlined, size: 16),
+                label: const Text("Edit"),
+                style: TextButton.styleFrom(foregroundColor: AppTheme.brandOrangeDark),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 30,
+                backgroundColor: AppTheme.brandOrangeLight,
+                child: Text(
+                  initials,
+                  style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.brandOrangeDark),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(name, style: GoogleFonts.plusJakartaSans(fontSize: 17, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
+                    Text(email, style: GoogleFonts.plusJakartaSans(fontSize: 12.5, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        _accountMetaChip(
+                          icon: account?.role == AppRole.hearing ? Icons.hearing : Icons.sign_language,
+                          label: (account?.role ?? _socket.currentRole) == AppRole.deaf ? "Deaf Mode" : "Hearing Mode",
+                        ),
+                        if ((account?.phone ?? "").isNotEmpty)
+                          _accountMetaChip(icon: Icons.phone_outlined, label: account!.phone!),
+                        if ((account?.location ?? "").isNotEmpty)
+                          _accountMetaChip(icon: Icons.location_on_outlined, label: account!.location!),
+                      ],
+                    ),
+                    if ((account?.bio ?? "").isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(account!.bio!, style: GoogleFonts.plusJakartaSans(fontSize: 12, fontStyle: FontStyle.italic, color: AppTheme.textSecondary)),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _confirmLogout,
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(color: Colors.redAccent.withValues(alpha: 0.5)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+              icon: const Icon(Icons.logout, size: 18, color: Colors.redAccent),
+              label: Text("Log Out", style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: Colors.redAccent)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _accountMetaChip({required IconData icon, required String label}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: AppTheme.bgCardSecondary,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: AppTheme.brandOrangeDark),
+          const SizedBox(width: 4),
+          Text(label, style: GoogleFonts.plusJakartaSans(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+        ],
+      ),
+    );
+  }
+
+  void _showEditAccountSheet() {
+    _loadAccountIntoControllers();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+          child: Container(
+            constraints: const BoxConstraints(maxHeight: 720),
+            decoration: const BoxDecoration(
+              color: AppTheme.bgCard,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: const EdgeInsets.all(24),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("Edit Account Details", style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.bold)),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: AppTheme.textSecondary),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    "Update your personal details. Changes are saved to your account on this device.",
+                    style: GoogleFonts.plusJakartaSans(fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _nameController,
+                    decoration: const InputDecoration(labelText: "Full Name", prefixIcon: Icon(Icons.person_outline)),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(labelText: "Email Address", prefixIcon: Icon(Icons.email_outlined)),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _phoneController,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(labelText: "Phone (optional)", prefixIcon: Icon(Icons.phone_outlined)),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _locationController,
+                    decoration: const InputDecoration(labelText: "City / Location (optional)", prefixIcon: Icon(Icons.location_on_outlined)),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _bioController,
+                    maxLines: 2,
+                    decoration: const InputDecoration(labelText: "About Me (optional)", prefixIcon: Icon(Icons.info_outline)),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _saveProfileEdits();
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brandOrangeDark,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                      icon: const Icon(Icons.save_outlined, size: 18),
+                      label: Text("Save Changes", style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildCameraCard() {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -295,7 +601,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               Switch(
                 value: _socket.isCameraEnabled,
-                activeColor: AppTheme.brandOrangeDark,
+                activeThumbColor: AppTheme.brandOrangeDark,
                 onChanged: (val) => _socket.toggleCamera(val),
               ),
             ],

@@ -29,7 +29,7 @@ class PermissionCard extends StatelessWidget {
           color: AppTheme.bgCard,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: isGranted ? AppTheme.brandOrange.withOpacity(0.5) : AppTheme.borderColor,
+            color: isGranted ? AppTheme.brandOrange.withValues(alpha: 0.5) : AppTheme.borderColor,
             width: isGranted ? 1.5 : 1.0,
           ),
         ),

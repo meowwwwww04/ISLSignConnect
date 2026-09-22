@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../theme/app_theme.dart';
+import '../services/socket_service.dart';
 
 class SidebarNav extends StatelessWidget {
   final String activeRoute;
@@ -29,6 +30,24 @@ class SidebarNav extends StatelessWidget {
           // Logo Header
           Row(
             children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.asset(
+                  'assets/images/app_logo.png',
+                  width: 32,
+                  height: 32,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: AppTheme.brandOrangeLight,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Text("🤟", style: TextStyle(fontSize: 18)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
               Text(
                 "SignConnect",
                 style: GoogleFonts.outfit(
@@ -242,22 +261,155 @@ class SidebarNav extends StatelessWidget {
   }
 
   void _showAccountModal(BuildContext context) {
+    final socket = SocketService();
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text("User Profile Account", style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
-        content: Text(
-          "User: SignConnect Member\nRole: Deaf User Mode Active\nStatus: Connected to Room",
-          style: GoogleFonts.plusJakartaSans(fontSize: 13, height: 1.5),
+        title: Row(
+          children: [
+            CircleAvatar(
+              backgroundColor: AppTheme.brandOrange,
+              radius: 20,
+              child: Text(
+                socket.userName.isNotEmpty ? socket.userName[0].toUpperCase() : "U",
+                style: GoogleFonts.outfit(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(socket.userName, style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 18)),
+                  Text(socket.userEmail, style: GoogleFonts.plusJakartaSans(fontSize: 12, color: AppTheme.textMuted)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Divider(),
+            const SizedBox(height: 8),
+            _profileDetailRow("Active Mode", socket.currentRole == AppRole.deaf ? "🤟 Deaf Mode (MediaPipe)" : "🎙️ Hearing Mode (Speech STT)"),
+            const SizedBox(height: 8),
+            _profileDetailRow("Room Code", socket.currentRoomId),
+            const SizedBox(height: 8),
+            _profileDetailRow("Vocabulary", socket.vocabularyFocus),
+            const SizedBox(height: 8),
+            _profileDetailRow("Mic Sensitivity", "${(socket.micSensitivity * 100).toInt()}%"),
+          ],
         ),
         actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              onNavigate("login");
+            },
+            child: const Text("Sign Out", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+          ),
+          OutlinedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showEditProfileDialog(context);
+            },
+            child: const Text("Edit Profile"),
+          ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context),
             child: const Text("Done"),
           )
         ],
       ),
+    );
+  }
+
+  void _showEditProfileDialog(BuildContext context) {
+    final socket = SocketService();
+    final nameController = TextEditingController(text: socket.userName);
+    final emailController = TextEditingController(text: socket.userEmail);
+    AppRole editRole = socket.currentRole;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Text("Edit Account Profile", style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: nameController,
+                      decoration: const InputDecoration(labelText: "Full Name", prefixIcon: Icon(Icons.person)),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: emailController,
+                      decoration: const InputDecoration(labelText: "Email Address", prefixIcon: Icon(Icons.email)),
+                    ),
+                    const SizedBox(height: 16),
+                    Text("Role Preference", style: GoogleFonts.jetBrainsMono(fontSize: 10, color: AppTheme.textMuted)),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text("🤟 Deaf Mode"),
+                          selected: editRole == AppRole.deaf,
+                          onSelected: (val) => setModalState(() => editRole = AppRole.deaf),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text("🎙️ Hearing Mode"),
+                          selected: editRole == AppRole.hearing,
+                          onSelected: (val) => setModalState(() => editRole = AppRole.hearing),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("Cancel"),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    socket.updateUserProfile(
+                      name: nameController.text,
+                      email: emailController.text,
+                      role: editRole,
+                    );
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Account Profile updated successfully!")),
+                    );
+                  },
+                  child: const Text("Save Changes"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _profileDetailRow(String label, String value) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: GoogleFonts.plusJakartaSans(fontSize: 12, color: AppTheme.textMuted)),
+        Text(value, style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.bold)),
+      ],
     );
   }
 }
