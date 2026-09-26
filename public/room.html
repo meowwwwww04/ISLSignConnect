@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>SignConnect — Video Room</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      height: 100%;
+      background: #0f172a;
+      color: #e5e7eb;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      overscroll-behavior: none;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      padding-top: calc(10px + env(safe-area-inset-top));
+      background: #111827;
+      border-bottom: 1px solid #1f2937;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      font-weight: 800;
+      font-size: 16px;
+      color: #f97316;
+    }
+
+    .chip {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+      max-width: 60vw;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #statusChip {
+      color: #93c5fd;
+    }
+
+    #statusChip.live {
+      color: #4ade80;
+      border-color: #166534;
+    }
+
+    .stage {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      min-height: 0;
+      background: #000;
+    }
+
+    #remoteVideo {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #000;
+      display: block;
+    }
+
+    #localVideo {
+      position: absolute;
+      right: 12px;
+      bottom: 16px;
+      width: 32vw;
+      max-width: 150px;
+      min-width: 96px;
+      aspect-ratio: 3 / 4;
+      object-fit: cover;
+      border-radius: 14px;
+      border: 2px solid #f97316;
+      background: #111827;
+      z-index: 3;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+      transform: scaleX(-1);
+    }
+
+    #waiting {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: #0f172a;
+      z-index: 2;
+      text-align: center;
+      padding: 24px;
+    }
+
+    #waiting.hidden {
+      display: none;
+    }
+
+    #waiting .avatar {
+      font-size: 46px;
+    }
+
+    #waitingTitle {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    #waitingSub {
+      color: #9ca3af;
+      font-size: 14px;
+      max-width: 340px;
+      line-height: 1.5;
+    }
+
+    #permBtn {
+      display: none;
+      margin-top: 4px;
+      padding: 13px 20px;
+      border-radius: 12px;
+      border: none;
+      background: #f97316;
+      color: #fff;
+      font-weight: 700;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    #errMsg {
+      color: #fca5a5;
+      font-size: 14px;
+      max-width: 340px;
+      line-height: 1.5;
+      display: none;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      padding: 14px;
+      padding-bottom: calc(14px + env(safe-area-inset-bottom));
+      background: #111827;
+      border-top: 1px solid #1f2937;
+    }
+
+    .ctrl {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      border: none;
+      font-size: 22px;
+      background: #1f2937;
+      color: #fff;
+      cursor: pointer;
+      transition: background .15s;
+    }
+
+    .ctrl.off {
+      background: #ef4444;
+    }
+
+    .ctrl:active {
+      transform: scale(.94);
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <div class="brand">🤟 SignConnect</div>
+    <div class="chip" id="roomChip">room…</div>
+    <div class="chip" id="statusChip">Connecting…</div>
+  </header>
+
+  <main class="stage">
+    <video id="remoteVideo" autoplay playsinline></video>
+    <video id="localVideo" autoplay playsinline muted></video>
+
+    <div id="waiting">
+      <div class="avatar">👤</div>
+      <div id="waitingTitle">Waiting for peer…</div>
+      <div id="waitingSub">
+        Open this page on both devices (or share this link) — joins the same room.<br />
+        No app install needed.
+      </div>
+      <button id="permBtn">Allow camera &amp; microphone</button>
+      <div id="errMsg"></div>
+    </div>
+  </main>
+
+  <div class="controls">
+    <button class="ctrl" id="btnMic" title="Toggle microphone">🎙️</button>
+    <button class="ctrl" id="btnCam" title="Toggle camera">📹</button>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    (function () {
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
+      const waitingEl = document.getElementById("waiting");
+      const waitingTitle = document.getElementById("waitingTitle");
+      const statusChip = document.getElementById("statusChip");
+      const roomChip = document.getElementById("roomChip");
+      const errMsg = document.getElementById("errMsg");
+      const permBtn = document.getElementById("permBtn");
+      const btnMic = document.getElementById("btnMic");
+      const btnCam = document.getElementById("btnCam");
+
+      const match = window.location.pathname.match(/\/room\/([^\/?#]+)/);
+      const roomId = match ? decodeURIComponent(match[1]) : "signconnect-room";
+      roomChip.textContent = roomId;
+
+      let localStream = null;
+      let pc = null;
+      let socket = null;
+      let pendingCandidates = [];
+      let hasRemote = false;
+
+      const FALLBACK_ICE = [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ];
+      let iceServers = FALLBACK_ICE;
+
+      function setStatus(text, live) {
+        statusChip.textContent = text;
+        statusChip.classList.toggle("live", !!live);
+      }
+
+      function showError(msg) {
+        errMsg.textContent = msg;
+        errMsg.style.display = "block";
+        permBtn.style.display = "inline-block";
+      }
+
+      async function loadIceServers() {
+        try {
+          const res = await fetch("/api/turn-credentials", { signal: AbortSignal.timeout(8000) });
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.iceServers) && data.iceServers.length) {
+              iceServers = data.iceServers;
+            }
+          }
+        } catch (e) {
+          console.warn("[Room] ICE fetch failed, using STUN only", e);
+        }
+        console.log("[Room] ICE servers:", iceServers.length);
+      }
+
+      async function startMedia() {
+        errMsg.style.display = "none";
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: { echoCancellation: true, noiseSuppression: true },
+          });
+          localVideo.srcObject = localStream;
+          await localVideo.play().catch(() => { });
+          permBtn.style.display = "none";
+          console.log("[Room] Local media OK");
+          return true;
+        } catch (e) {
+          console.error("[Room] getUserMedia failed:", e);
+          showError(
+            "Camera/microphone access was blocked. Tap the button below to allow, " +
+            "or enable it in your browser's site settings."
+          );
+          return false;
+        }
+      }
+
+      function createPeer() {
+        closePeer();
+        pc = new RTCPeerConnection({ iceServers });
+        pc.onicecandidate = (e) => {
+          if (e.candidate && socket && socket.connected) {
+            socket.emit("ice-candidate", { roomId, candidate: e.candidate });
+          }
+        };
+        pc.ontrack = (e) => {
+          console.log("[Room] Remote track arrived");
+          remoteVideo.srcObject = e.streams[0];
+          remoteVideo.play().catch(() => { });
+          hasRemote = true;
+          waitingEl.classList.add("hidden");
+          setStatus("Connected", true);
+        };
+        pc.onconnectionstatechange = () => {
+          console.log("[Room] PC state:", pc.connectionState);
+          if (pc.connectionState === "connected") {
+            waitingEl.classList.add("hidden");
+            setStatus("Connected", true);
+          } else if (pc.connectionState === "failed") {
+            setStatus("Reconnecting…", false);
+            resetRemoteView();
+          } else if (pc.connectionState === "disconnected") {
+            setStatus("Peer link interrupted…", false);
+          }
+        };
+        if (localStream) {
+          localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+        }
+        return pc;
+      }
+
+      function closePeer() {
+        if (pc) {
+          try { pc.ontrack = null; pc.onicecandidate = null; pc.close(); } catch (e) { }
+          pc = null;
+        }
+        pendingCandidates = [];
+      }
+
+      function resetRemoteView() {
+        hasRemote = false;
+        remoteVideo.srcObject = null;
+        waitingEl.classList.remove("hidden");
+        waitingTitle.textContent = "Waiting for peer…";
+        setStatus("In room", false);
+      }
+
+      async function startOffer() {
+        if (!localStream) {
+          const ok = await startMedia();
+          if (!ok) return;
+        }
+        const peer = createPeer();
+        try {
+          const offer = await peer.createOffer();
+          await peer.setLocalDescription(offer);
+          socket.emit("offer", { roomId, offer: peer.localDescription });
+          console.log("[Room] Offer sent");
+        } catch (e) {
+          console.error("[Room] createOffer failed", e);
+        }
+      }
+
+      function connectSocket() {
+        socket = io({ transports: ["websocket", "polling"] });
+
+        socket.on("connect", () => {
+          console.log("[Room] Socket connected", socket.id);
+          setStatus("In room", false);
+          socket.emit("join-room", { roomId, role: "hearing" });
+        });
+
+        socket.on("connect_error", (err) => {
+          console.warn("[Room] socket error", err);
+          setStatus("Server retrying…", false);
+        });
+
+        socket.on("room-participants", (participants) => {
+          console.log("[Room] participants:", participants.length);
+          if (!hasRemote && participants.length > 1) {
+            waitingTitle.textContent = "Peer joined — connecting video…";
+          }
+        });
+
+        socket.on("user-joined", () => {
+          console.log("[Room] Peer joined, sending offer");
+          resetRemoteView();
+          waitingTitle.textContent = "Peer joined — starting call…";
+          startOffer();
+        });
+
+        socket.on("user-left", () => {
+          console.log("[Room] Peer left");
+          resetRemoteView();
+        });
+
+        socket.on("offer", async (data) => {
+          console.log("[Room] Offer received");
+          try {
+            const peer = pc || createPeer();
+            await peer.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const queued = pendingCandidates;
+            pendingCandidates = [];
+            for (const c of queued) {
+              try { await peer.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { }
+            }
+            const answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+            socket.emit("answer", { roomId, answer: peer.localDescription });
+            console.log("[Room] Answer sent");
+          } catch (e) {
+            console.error("[Room] offer handling failed", e);
+          }
+        });
+
+        socket.on("answer", async (data) => {
+          console.log("[Room] Answer received");
+          try {
+            if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+            const queued = pendingCandidates;
+            pendingCandidates = [];
+            for (const c of queued) {
+              try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { }
+            }
+          } catch (e) {
+            console.error("[Room] answer handling failed", e);
+          }
+        });
+
+        socket.on("ice-candidate", async (data) => {
+          try {
+            if (pc && pc.remoteDescription) {
+              await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            } else {
+              pendingCandidates.push(data.candidate);
+            }
+          } catch (e) {
+            console.warn("[Room] addIceCandidate failed", e);
+          }
+        });
+      }
+
+      btnMic.addEventListener("click", () => {
+        if (!localStream) return;
+        const track = localStream.getAudioTracks()[0];
+        if (!track) return;
+        track.enabled = !track.enabled;
+        btnMic.classList.toggle("off", !track.enabled);
+      });
+
+      btnCam.addEventListener("click", () => {
+        if (!localStream) return;
+        const track = localStream.getVideoTracks()[0];
+        if (!track) return;
+        track.enabled = !track.enabled;
+        btnCam.classList.toggle("off", !track.enabled);
+      });
+
+      permBtn.addEventListener("click", async () => {
+        const ok = await startMedia();
+        if (ok && socket && socket.connected && !pc) {
+          // Re-announce so an already-present peer triggers a fresh offer toward us
+          socket.emit("join-room", { roomId, role: "hearing" });
+        }
+      });
+
+      (async function init() {
+        if (!window.isSecureContext) {
+          showError("This page must be opened over https:// to use the camera.");
+          return;
+        }
+        await loadIceServers();
+        const ok = await startMedia();
+        if (!ok) {
+          waitingTitle.textContent = "Camera permission needed";
+        }
+        connectSocket();
+      })();
+    })();
+  </script>
+</body>
+
+</html>

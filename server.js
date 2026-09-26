@@ -8,9 +8,26 @@ const fs = require("fs");
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// --- Browser room page (no app install needed) ---
+// Shared link format: https://<host>/room/<roomcode>
+app.get("/room/:code", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "room.html"));
+});
+
+// Legacy shared links: /?room=<code> → /room/<code>
+app.get("/", (req, res, next) => {
+  const room = req.query.room;
+  if (room && typeof room === "string" && room.trim()) {
+    return res.redirect(302, `/room/${encodeURIComponent(room.trim())}`);
+  }
+  next();
+});
+
+// Serve the working pure-web client first; Flutter web build only if present locally
+app.use(express.static(path.join(__dirname, "public")));
 app.use(express.static(path.join(__dirname, "signconnect_app", "build", "web")));
 app.use(express.static(path.join(__dirname, "signconnect_app", "web")));
-app.use(express.static(path.join(__dirname, "public")));
 
 // --- TURN Credential Proxy ---
 // Clients call /api/turn-credentials to get ICE servers for WebRTC.

@@ -15,9 +15,12 @@ class RoomJoinScreen extends StatefulWidget {
   State<RoomJoinScreen> createState() => _RoomJoinScreenState();
 }
 
+const String kDefaultServerUrl = "https://islsignconnect.onrender.com";
+
 class _RoomJoinScreenState extends State<RoomJoinScreen> {
   final TextEditingController _roomController = TextEditingController(text: "signconnect-room");
-  final TextEditingController _serverController = TextEditingController(text: "");
+  final TextEditingController _serverController =
+      TextEditingController(text: kDefaultServerUrl);
   bool _isConnecting = false;
   String? _errorText;
 
@@ -31,8 +34,12 @@ class _RoomJoinScreenState extends State<RoomJoinScreen> {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _serverController.text =
-          prefs.getString('signconnect_server_url') ?? _serverController.text;
+      final savedServer = prefs.getString('signconnect_server_url');
+      if (savedServer != null && savedServer.isNotEmpty && _isValidServerUrl(savedServer)) {
+        _serverController.text = savedServer;
+      } else {
+        _serverController.text = kDefaultServerUrl;
+      }
       final savedRoom = prefs.getString('signconnect_room_id');
       if (savedRoom != null && savedRoom.isNotEmpty) {
         _roomController.text = savedRoom;
@@ -57,7 +64,7 @@ class _RoomJoinScreenState extends State<RoomJoinScreen> {
     final server = _serverController.text.trim();
     final room = _roomController.text.trim();
     if (server.isEmpty || room.isEmpty) return "";
-    return "$server/?room=$room";
+    return "$server/room/$room";
   }
 
   void _copyShareLink() {
@@ -88,7 +95,7 @@ class _RoomJoinScreenState extends State<RoomJoinScreen> {
       return;
     }
     if (!_isValidServerUrl(serverUrl)) {
-      setState(() => _errorText =                           "Enter the server URL, e.g. https://signconnect-xxxx.onrender.com");
+      setState(() => _errorText = "Enter the server URL, e.g. $kDefaultServerUrl");
       return;
     }
 
@@ -208,7 +215,7 @@ class _RoomJoinScreenState extends State<RoomJoinScreen> {
                           controller: _serverController,
                           keyboardType: TextInputType.url,
                           decoration: InputDecoration(
-                            hintText: "https://signconnect-xxxx.onrender.com",
+                            hintText: kDefaultServerUrl,
                             prefixIcon: const Icon(Icons.dns_outlined, color: AppTheme.textSecondary),
                             suffixIcon: IconButton(
                               icon: const Icon(Icons.help_outline, size: 18),
@@ -217,7 +224,7 @@ class _RoomJoinScreenState extends State<RoomJoinScreen> {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
                                     content: Text(
-                                      "Enter the full URL of your SignConnect server (e.g. https://your-app.onrender.com). Both devices use this same URL to connect.",
+                                      "Enter the full URL of your SignConnect server (default: $kDefaultServerUrl). Both devices use this same URL to connect.",
                                     ),
                                     duration: Duration(seconds: 5),
                                   ),
@@ -295,6 +302,7 @@ class _RoomJoinScreenState extends State<RoomJoinScreen> {
                             onPressed: _isConnecting ? null : _launchSession,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: AppTheme.brandOrangeDark,
+                              padding: const EdgeInsets.symmetric(vertical: angeDark,
                               padding: const EdgeInsets.symmetric(vertical: 16),
                             ),
                             icon: _isConnecting
