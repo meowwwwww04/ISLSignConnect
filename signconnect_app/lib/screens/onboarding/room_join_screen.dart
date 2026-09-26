@@ -302,7 +302,6 @@ class _RoomJoinScreenState extends State<RoomJoinScreen> {
                             onPressed: _isConnecting ? null : _launchSession,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: AppTheme.brandOrangeDark,
-                              padding: const EdgeInsets.symmetric(vertical: angeDark,
                               padding: const EdgeInsets.symmetric(vertical: 16),
                             ),
                             icon: _isConnecting
