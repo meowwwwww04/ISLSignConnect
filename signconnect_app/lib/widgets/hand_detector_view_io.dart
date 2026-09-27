@@ -37,6 +37,7 @@ class _HandDetectorViewState extends State<HandDetectorView> {
   final rtc.RTCVideoRenderer _renderer = rtc.RTCVideoRenderer();
   bool _rendererReady = false;
   rtc.MediaStream? _attachedStream;
+  String? _attachedVideoTrackId;
 
   // Detection mode
   CameraController? _cameraController;
@@ -46,6 +47,8 @@ class _HandDetectorViewState extends State<HandDetectorView> {
   int _sensorOrientation = 90;
   bool _lensFront = true;
   bool _detectorStarting = false;
+  bool _stoppingPipeline = false;
+  bool _pausedForPeer = false;
 
   // Gesture stability tracking
   String _currentGesture = "-";
@@ -82,13 +85,16 @@ class _HandDetectorViewState extends State<HandDetectorView> {
       _socket.setMediaStatus("permission_denied");
       return;
     }
-    if (_detecting) {
+    // Detection takes the camera exclusively — never while a video peer is
+    // in the room, otherwise the peer receives no video at all.
+    if (_detecting && !_socket.peerPresent) {
       await _startDetectionPipeline();
     } else {
       await _socket.ensureLocalMedia();
       if (_socket.serverUrl.isNotEmpty && !_socket.isConnected) {
         await _socket.joinRoom();
       }
+      _attachStream(_socket.localStream);
     }
   }
 
@@ -102,8 +108,16 @@ class _HandDetectorViewState extends State<HandDetectorView> {
 
   void _attachStream(rtc.MediaStream? stream) {
     if (!_rendererReady) return;
-    if (identical(stream, _attachedStream)) return;
+    // Re-set srcObject whenever the video track appears/changes: the native
+    // renderer only binds videoTracks[0] at set-time and detection release /
+    // reacquire swaps tracks while the stream object stays the same.
+    final videoTracks = stream?.getVideoTracks() ?? const <rtc.MediaStreamTrack>[];
+    final videoTrackId = videoTracks.isNotEmpty ? videoTracks.first.id : null;
+    if (identical(stream, _attachedStream) && videoTrackId == _attachedVideoTrackId) {
+      return;
+    }
     _attachedStream = stream;
+    _attachedVideoTrackId = videoTrackId;
     _renderer.srcObject = stream;
     if (mounted) setState(() {});
   }
@@ -111,12 +125,35 @@ class _HandDetectorViewState extends State<HandDetectorView> {
   void _onServiceChanged() {
     _applyTrackStates();
     final detecting = _socket.isDetectionEnabled;
-    if (detecting && _cameraController == null && !_detectorStarting) {
+    final peerHere = _socket.peerPresent;
+    final pipelineActive = _cameraController != null || _detectorStarting;
+
+    if (detecting && !peerHere && !pipelineActive && !_stoppingPipeline) {
       _startDetectionPipeline();
-    } else if (!detecting && _cameraController != null) {
+    } else if (pipelineActive && (peerHere || !detecting)) {
+      // Peer joined (camera must stream video) or detection switched off.
       _stopDetectionPipeline();
     }
-    if (!_detecting) _attachStream(_socket.localStream);
+
+    if (peerHere && (pipelineActive || _stoppingPipeline) && !_pausedForPeer) {
+      _pausedForPeer = true;
+      _socket.addTranscript(
+        "System",
+        "Video peer in room — camera switched to the live call. ISL detection is paused and resumes after the call.",
+        "system",
+      );
+    } else if (!peerHere && _pausedForPeer) {
+      _pausedForPeer = false;
+      if (detecting) {
+        _socket.addTranscript(
+          "System",
+          "Peer left — ISL sign detection resuming.",
+          "system",
+        );
+      }
+    }
+
+    if (!pipelineActive) _attachStream(_socket.localStream);
   }
 
   void _applyTrackStates() {
@@ -133,9 +170,10 @@ class _HandDetectorViewState extends State<HandDetectorView> {
   // ---------------- Detection pipeline ----------------
 
   Future<void> _startDetectionPipeline() async {
-    if (_detectorStarting || _cameraController != null) return;
+    if (_detectorStarting || _cameraController != null || _stoppingPipeline) return;
     _detectorStarting = true;
     try {
+      if (_socket.peerPresent) return; // camera must stay with WebRTC
       await _socket.releaseCameraForDetection();
       await Future.delayed(const Duration(milliseconds: 400));
 
@@ -175,29 +213,40 @@ class _HandDetectorViewState extends State<HandDetectorView> {
         _sensorOrientation = camera.sensorOrientation;
         _hands = const [];
       });
+      // A peer may have joined while we were starting: hand the camera
+      // straight back to WebRTC so the call shows live video.
+      if (_socket.peerPresent) {
+        await _stopDetectionPipeline();
+      }
     } catch (e) {
       debugPrint("Detection pipeline error: $e");
       if (mounted) {
         setState(() => _currentGesture = "Detection unavailable");
       }
-      await _stopDetectionPipeline(reacquireWebrtc: true);
+      await _stopDetectionPipeline();
     } finally {
       _detectorStarting = false;
     }
   }
 
   Future<void> _stopDetectionPipeline({bool reacquireWebrtc = true}) async {
+    if (_stoppingPipeline) return;
+    _stoppingPipeline = true;
     try {
-      await _cameraController?.stopImageStream();
-      await _cameraController?.dispose();
-    } catch (_) {}
-    _cameraController = null;
-    if (!reacquireWebrtc && mounted) setState(() {});
-    if (mounted) setState(() => _hands = const []);
-    if (reacquireWebrtc) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _socket.reacquireCameraAfterDetection();
-      _attachStream(_socket.localStream);
+      try {
+        await _cameraController?.stopImageStream();
+        await _cameraController?.dispose();
+      } catch (_) {}
+      _cameraController = null;
+      if (!reacquireWebrtc && mounted) setState(() {});
+      if (mounted) setState(() => _hands = const []);
+      if (reacquireWebrtc) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        await _socket.reacquireCameraAfterDetection();
+        _attachStream(_socket.localStream);
+      }
+    } finally {
+      _stoppingPipeline = false;
     }
   }
 
@@ -419,16 +468,19 @@ class _HandDetectorViewState extends State<HandDetectorView> {
 
   @override
   Widget build(BuildContext context) {
+    // Detection preview only while the pipeline actually owns the camera;
+    // while a video peer is present the WebRTC feed must be shown instead.
+    final showDetection = _detecting && !_socket.peerPresent;
     return Container(
       color: const Color(0xFF181310),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (_detecting)
+          if (showDetection)
             _buildDetectionFeed()
           else
             _buildWebrtcFeed(),
-          if (_detecting) _buildGestureBanner(),
+          if (showDetection) _buildGestureBanner(),
         ],
       ),
     );
@@ -481,6 +533,20 @@ class _HandDetectorViewState extends State<HandDetectorView> {
             await _socket.ensureLocalMedia();
             _attachStream(_socket.localStream);
           },
+        );
+      case "ready":
+        // Media is granted but the video track is being swapped back from
+        // the detection pipeline — show a short transitional spinner.
+        return const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(color: Color(0xFFFF5E1E)),
+              SizedBox(height: 12),
+              Text("Starting live video…",
+                  style: TextStyle(color: Colors.white70, fontSize: 13)),
+            ],
+          ),
         );
       default:
         return _buildMessage(

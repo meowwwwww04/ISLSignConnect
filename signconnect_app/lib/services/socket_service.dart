@@ -28,6 +28,7 @@ class SocketService extends ChangeNotifier {
   bool _isTTSEnabled = true;
   bool _isDetectionEnabled = true; // live MediaPipe sign detection on the call stage
   bool _isRemoteUserConnected = false;
+  bool _peerPresent = false; // signaling-level: another user is in the room
   bool _isSwappedFeeds = false;
   double _micSensitivity = 0.75;
   String _vocabularyFocus = "Daily";
@@ -60,7 +61,6 @@ class SocketService extends ChangeNotifier {
   rtc.RTCPeerConnection? _peerConnection;
   rtc.MediaStream? _localStream;
   rtc.MediaStream? _remoteStream;
-  rtc.RTCRtpSender? _cachedVideoSender;
   bool _makingOffer = false;
   bool _ignoreOffer = false;
   List<Map<String, dynamic>>? _cachedIceServers;
@@ -81,6 +81,10 @@ class SocketService extends ChangeNotifier {
   bool get isTTSEnabled => _isTTSEnabled;
   bool get isDetectionEnabled => _isDetectionEnabled && _isCameraEnabled;
   bool get isRemoteUserConnected => _isRemoteUserConnected;
+
+  /// True while another user occupies the room (presence or media level).
+  /// While true, the camera must stay with WebRTC so the peer sees video.
+  bool get peerPresent => _peerPresent || _isRemoteUserConnected;
   bool get isSwappedFeeds => _isSwappedFeeds;
   double get micSensitivity => _micSensitivity;
   String get vocabularyFocus => _vocabularyFocus;
@@ -246,7 +250,9 @@ class SocketService extends ChangeNotifier {
     addTranscript(
       "System",
       target
-          ? "Live ISL sign detection enabled — your peer sees a placeholder while detection runs."
+          ? (peerPresent
+              ? "ISL sign detection requested — it will use the camera after your video peer leaves the room."
+              : "Live ISL sign detection enabled — signs broadcast to your peer while you sign.")
           : "Sign detection off — live camera streaming to your peer.",
       "system",
     );
@@ -303,6 +309,7 @@ class SocketService extends ChangeNotifier {
     _isCameraEnabled = true;
     _isMicEnabled = true;
     _isRemoteUserConnected = false;
+    _peerPresent = false;
     _isConnected = false;
     _transcripts.clear();
     addTranscript("System", "Left room '$_currentRoomId'. Call session ended.", "system");
@@ -434,17 +441,18 @@ class SocketService extends ChangeNotifier {
     final stream = _localStream;
     if (stream == null) return;
     try {
-      final videoTracks = stream.getVideoTracks();
-      // Remember the sender so we can hot-swap the track back on resume.
+      final videoTracks = List<rtc.MediaStreamTrack>.from(stream.getVideoTracks());
+      // Find the sender currently carrying video so we can null it too.
+      // NOTE: RTCRtpSender has no getParameters() in this plugin version and
+      // rtpParametersToMap does not include "kind" — identify by track kind.
       final senders = await _peerConnection?.getSenders();
       rtc.RTCRtpSender? videoSender;
-      for (final s in senders ?? const []) {
-        if ((await s.getParameters()).kind == 'video') {
+      for (final s in senders ?? const <rtc.RTCRtpSender>[]) {
+        if (s.track?.kind == 'video') {
           videoSender = s;
           break;
         }
       }
-      _cachedVideoSender = videoSender;
       for (final t in videoTracks) {
         await senderReplaceTrack(videoSender, null);
         t.stop();
@@ -457,7 +465,7 @@ class SocketService extends ChangeNotifier {
   }
 
   /// Re-acquires the camera after the detection screen closes and hot-swaps
-  /// it back into the ongoing WebRTC session without renegotiation.
+  /// it back into the ongoing WebRTC session.
   Future<void> reacquireCameraAfterDetection() async {
     if (kIsWeb) return;
     try {
@@ -481,12 +489,88 @@ class SocketService extends ChangeNotifier {
         return;
       }
       _applyTrackStates();
-      await senderReplaceTrack(_cachedVideoSender, tracks.first);
-      _cachedVideoSender = null;
+      await _ensureVideoSending(tracks.first);
     } catch (e) {
       debugPrint("reacquireCameraAfterDetection: $e");
     }
     notifyListeners();
+  }
+
+  /// Makes sure the given video track is actually being sent to the peer.
+  /// 1. A sender already carries video -> replaceTrack (no renegotiation).
+  /// 2. A negotiated video transceiver exists but its sender track was nulled
+  ///    by releaseCameraForDetection -> replaceTrack + setDirection + renego.
+  /// 3. Nothing suitable (PeerConnection was created while detection held the
+  ///    camera, so it is audio-only) -> addTrack + renegotiate.
+  /// If no PeerConnection exists yet there is nothing to do: it picks up all
+  /// local stream tracks when it is created.
+  Future<void> _ensureVideoSending(rtc.MediaStreamTrack track) async {
+    final pc = _peerConnection;
+    if (pc == null) return;
+
+    try {
+      // 1. Sender already sending video.
+      final senders = await pc.getSenders();
+      for (final s in senders) {
+        if (s.track?.kind == 'video') {
+          await senderReplaceTrack(s, track);
+          debugPrint("[WebRTC] Video track replaced on existing sender");
+          return;
+        }
+      }
+
+      // 2. Video transceiver negotiated earlier, sender track currently null.
+      final transceivers = await pc.getTransceivers();
+      for (final t in transceivers) {
+        if (t.sender.track == null && t.receiver.track?.kind == 'video') {
+          await senderReplaceTrack(t.sender, track);
+          try {
+            await t.setDirection(rtc.TransceiverDirection.SendRecv);
+          } catch (e) {
+            debugPrint("[WebRTC] setDirection(SendRecv): $e");
+          }
+          debugPrint("[WebRTC] Video resumed on existing transceiver, renegotiating");
+          await _renegotiateForVideo();
+          return;
+        }
+      }
+
+      // 3. No video path at all — add the track (reuses a free video
+      //    transceiver if one exists) and renegotiate.
+      final local = _localStream;
+      if (local == null) return;
+      final sender = await pc.addTrack(track, local);
+      for (final t in await pc.getTransceivers()) {
+        if (t.sender.senderId == sender.senderId) {
+          try {
+            await t.setDirection(rtc.TransceiverDirection.SendRecv);
+          } catch (e) {
+            debugPrint("[WebRTC] setDirection(SendRecv): $e");
+          }
+          break;
+        }
+      }
+      debugPrint("[WebRTC] Video addTrack done, renegotiating");
+      await _renegotiateForVideo();
+    } catch (e) {
+      debugPrint("_ensureVideoSending: $e");
+    }
+  }
+
+  /// Offers again once the signaling state allows it so a freshly added
+  /// video track (added after the initial offer) reaches the peer.
+  Future<void> _renegotiateForVideo() async {
+    for (var attempt = 0; attempt < 8; attempt++) {
+      final pc = _peerConnection;
+      if (pc == null) return;
+      if (!_makingOffer &&
+          pc.signalingState == rtc.RTCSignalingState.RTCSignalingStateStable) {
+        await _createOfferToPeer();
+        return;
+      }
+      await Future.delayed(const Duration(milliseconds: 750));
+    }
+    debugPrint("[WebRTC] Could not renegotiate video: signaling never stable");
   }
 
   Future<void> senderReplaceTrack(rtc.RTCRtpSender? sender, rtc.MediaStreamTrack? track) async {
@@ -508,6 +592,7 @@ class SocketService extends ChangeNotifier {
     _peerConnection = null;
     _remoteStream = null;
     _isRemoteUserConnected = false;
+    _peerPresent = false;
 
     try {
       final socket = sio.io(
@@ -532,6 +617,7 @@ class SocketService extends ChangeNotifier {
       socket.onDisconnect((_) {
         _isConnected = false;
         _isRemoteUserConnected = false;
+        _peerPresent = false;
         addTranscript("System", "Disconnected from signaling server.", "system");
         notifyListeners();
       });
@@ -546,13 +632,17 @@ class SocketService extends ChangeNotifier {
         // Data: [ { id, role }, ... ] — used to detect peers already in room.
         if (data is List) {
           final others = data.whereType<Map>().where((p) => p['id'] != socket.id).length;
-          if (others > 0 && _peerConnection == null) {
-            // A peer was already here before us; wait a beat then offer.
-            Future.delayed(const Duration(milliseconds: 600), () {
-              if (_peerConnection == null) {
-                _createOfferToPeer();
-              }
-            });
+          if (others > 0) {
+            _peerPresent = true;
+            notifyListeners();
+            if (_peerConnection == null) {
+              // A peer was already here before us; wait a beat then offer.
+              Future.delayed(const Duration(milliseconds: 600), () {
+                if (_peerConnection == null) {
+                  _createOfferToPeer();
+                }
+              });
+            }
           }
         }
       });
@@ -561,6 +651,9 @@ class SocketService extends ChangeNotifier {
         if (data is Map && data['id'] != socket.id) {
           final roleStr = data['role']?.toString() ?? '';
           addTranscript("System", "Peer joined (${roleStr.isEmpty ? 'unknown' : roleStr} mode). Negotiating call...", "system");
+          // Camera must belong to WebRTC while a peer is in the room.
+          _peerPresent = true;
+          notifyListeners();
           // Existing participant initiates the SDP offer.
           _createOfferToPeer();
         }
@@ -568,6 +661,7 @@ class SocketService extends ChangeNotifier {
 
       socket.on('user-left', (data) {
         _isRemoteUserConnected = false;
+        _peerPresent = false;
         _teardownPeerConnection();
         addTranscript("System", "Your peer left the call.", "system");
         notifyListeners();
@@ -661,23 +755,34 @@ class SocketService extends ChangeNotifier {
     final pc = await rtc.createPeerConnection(config);
 
     final local = _localStream;
+    bool hasVideo = false;
+    bool hasAudio = false;
     if (local != null) {
       for (final track in local.getTracks()) {
         await pc.addTrack(track, local);
+        if (track.kind == 'video') hasVideo = true;
+        if (track.kind == 'audio') hasAudio = true;
       }
-    } else {
-      // Still able to RECEIVE even without local media permission.
+    }
+    // Always be able to RECEIVE media kinds we are not currently sending
+    // (e.g. video while ISL detection still holds the camera).
+    if (!hasVideo) {
       await pc.addTransceiver(kind: rtc.RTCRtpMediaType.RTCRtpMediaTypeVideo, init: rtc.RTCRtpTransceiverInit(direction: rtc.TransceiverDirection.RecvOnly));
+    }
+    if (!hasAudio) {
       await pc.addTransceiver(kind: rtc.RTCRtpMediaType.RTCRtpMediaTypeAudio, init: rtc.RTCRtpTransceiverInit(direction: rtc.TransceiverDirection.RecvOnly));
     }
 
     pc.onTrack = (event) {
       if (event.streams.isNotEmpty) {
         _remoteStream = event.streams.first;
-        _isRemoteUserConnected = true;
-        addTranscript("System", "Call connected! Video streaming both ways.", "system");
-        notifyListeners();
       }
+      final firstConnect = !_isRemoteUserConnected;
+      _isRemoteUserConnected = true;
+      if (firstConnect) {
+        addTranscript("System", "Call connected! Video streaming both ways.", "system");
+      }
+      notifyListeners();
     };
 
     pc.onIceCandidate = (candidate) {

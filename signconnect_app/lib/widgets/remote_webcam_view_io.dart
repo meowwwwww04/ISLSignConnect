@@ -18,6 +18,7 @@ class _RemoteWebcamViewState extends State<RemoteWebcamView> {
   final rtc.RTCVideoRenderer _renderer = rtc.RTCVideoRenderer();
   bool _rendererReady = false;
   rtc.MediaStream? _attachedStream;
+  String? _attachedVideoTrackId;
 
   @override
   void initState() {
@@ -35,8 +36,17 @@ class _RemoteWebcamViewState extends State<RemoteWebcamView> {
 
   void _attachStream(rtc.MediaStream? stream) {
     if (!_rendererReady) return;
-    if (identical(stream, _attachedStream)) return;
+    // flutter_webrtc's native renderer only binds videoTracks[0] at
+    // set-time. The video track usually arrives AFTER the audio track on
+    // the same MediaStream, so re-set srcObject whenever the video track
+    // appears/changes — otherwise remote video stays black forever.
+    final videoTracks = stream?.getVideoTracks() ?? const <rtc.MediaStreamTrack>[];
+    final videoTrackId = videoTracks.isNotEmpty ? videoTracks.first.id : null;
+    if (identical(stream, _attachedStream) && videoTrackId == _attachedVideoTrackId) {
+      return;
+    }
     _attachedStream = stream;
+    _attachedVideoTrackId = videoTrackId;
     _renderer.srcObject = stream;
     if (mounted) setState(() {});
   }
@@ -59,7 +69,9 @@ class _RemoteWebcamViewState extends State<RemoteWebcamView> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (_rendererReady && _attachedStream != null)
+          // Render only once a remote VIDEO track exists — an audio-only
+          // stream would show a black rectangle instead of the waiting state.
+          if (_rendererReady && _attachedStream != null && _attachedVideoTrackId != null)
             rtc.RTCVideoView(
               _renderer,
               objectFit: rtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,

@@ -20,6 +20,7 @@ class _WebcamViewState extends State<WebcamView> {
   final RTCVideoRenderer _renderer = RTCVideoRenderer();
   bool _rendererReady = false;
   MediaStream? _attachedStream;
+  String? _attachedVideoTrackId;
 
   @override
   void initState() {
@@ -53,8 +54,15 @@ class _WebcamViewState extends State<WebcamView> {
 
   void _attachStream(MediaStream? stream) {
     if (!_rendererReady) return;
-    if (identical(stream, _attachedStream)) return;
+    // Native renderer binds videoTracks[0] only at set-time — re-set
+    // srcObject when the video track appears/changes on the same stream.
+    final videoTracks = stream?.getVideoTracks() ?? const <MediaStreamTrack>[];
+    final videoTrackId = videoTracks.isNotEmpty ? videoTracks.first.id : null;
+    if (identical(stream, _attachedStream) && videoTrackId == _attachedVideoTrackId) {
+      return;
+    }
     _attachedStream = stream;
+    _attachedVideoTrackId = videoTrackId;
     _renderer.srcObject = stream;
     if (mounted) setState(() {});
   }
