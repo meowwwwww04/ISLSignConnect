@@ -513,10 +513,26 @@ function switchRole() {
 }
 
 function leaveCall() {
-  if (confirm("Are you sure you want to leave SignConnect?")) {
+    if (!confirm("Are you sure you want to leave SignConnect?")) return;
+
+    // Properly tear down the WebRTC / signaling session first so the peer
+    // sees a clean disconnect instead of a silent drop.
+    if (typeof window.leaveSignConnectCall === "function") {
+      try { window.leaveSignConnectCall(); } catch (e) {}
+    }
+    if (webrtcManager && typeof webrtcManager.leaveRoom === "function") {
+      try { webrtcManager.leaveRoom(); } catch (e) {}
+    }
+
+    // Stop the local camera/mic tracks so the device is released.
+    if (localStream) {
+      localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+    }
+
+    addTranscriptEntry("System", "You left the call.", "system");
     window.location.reload();
   }
-}
 
 // -------------------------------------------------------------
 // Dual Camera Layout & Feed Controls

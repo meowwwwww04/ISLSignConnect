@@ -237,6 +237,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// What the top translation banner shows. Incoming speech is what the
+  /// other side has to read, so it wins whenever there is any; otherwise the
+  /// banner falls back to the latest recognised ISL sign.
+  ({String label, String value, bool speech}) get _translationBanner {
+    final speech = _socket.latestPeerSpeechText.trim();
+    if (speech.isNotEmpty) {
+      return (
+        label: _socket.currentRole == AppRole.deaf
+            ? "PEER SPEECH \u2192 TEXT"
+            : "LIVE SPEECH TRANSCRIPT",
+        value: speech,
+        speech: true,
+      );
+    }
+    return (
+      label: _socket.currentRole == AppRole.deaf
+          ? "RECOGNIZED ISL GESTURE"
+          : "PEER ISL SIGN",
+      value: _socket.lastRecognizedGesture,
+      speech: false,
+    );
+  }
+
   Widget _buildVideoCard({required bool isMobile}) {
     final isSwapped = _socket.isSwappedFeeds;
 
@@ -351,9 +374,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          _socket.currentRole == AppRole.deaf
-                              ? "RECOGNIZED ISL GESTURE"
-                              : "SPEECH TRANSLATED TO DEAF USER",
+                          _translationBanner.label,
                           style: GoogleFonts.jetBrainsMono(
                             fontSize: 8,
                             fontWeight: FontWeight.bold,
@@ -361,9 +382,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
                         Text(
-                          _socket.currentRole == AppRole.deaf
-                              ? _socket.lastRecognizedGesture
-                              : _socket.latestPeerSpeechText,
+                          _translationBanner.value,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: GoogleFonts.outfit(
@@ -379,11 +398,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: _socket.currentRole == AppRole.deaf ? AppTheme.accentGreen : Colors.blueAccent,
+                      color: _translationBanner.speech
+                          ? Colors.blueAccent
+                          : AppTheme.accentGreen,
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
-                      _socket.currentRole == AppRole.deaf ? "${_socket.gestureConfidence}%" : "LIVE STT",
+                      _translationBanner.speech ? "LIVE STT" : "${_socket.gestureConfidence}%",
                       style: GoogleFonts.jetBrainsMono(
                         fontSize: 9,
                         fontWeight: FontWeight.bold,

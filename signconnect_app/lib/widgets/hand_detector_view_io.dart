@@ -57,8 +57,7 @@ class _HandDetectorViewState extends State<HandDetectorView> {
   DateTime _lastBroadcastAt = DateTime.fromMillisecondsSinceEpoch(0);
   String _lastBroadcastedGesture = "-";
 
-  // ML Inference server
-  String _infServerUrl = "http://10.24.159.58:5001";
+  // ML inference server state (server itself lives on the PC; see Settings).
   bool _serverAvailable = true;
   bool _pendingRequest = false;
 
@@ -67,6 +66,7 @@ class _HandDetectorViewState extends State<HandDetectorView> {
   @override
   void initState() {
     super.initState();
+    _serverAvailable = _socket.infServerStatus != "offline";
     _initRenderer();
     _socket.addListener(_onServiceChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
@@ -85,6 +85,8 @@ class _HandDetectorViewState extends State<HandDetectorView> {
       _socket.setMediaStatus("permission_denied");
       return;
     }
+    // Locate the ML inference server before the first frame is classified.
+    _socket.resolveInfServer();
     // Detection takes the camera exclusively — never while a video peer is
     // in the room, otherwise the peer receives no video at all.
     if (_detecting && !_socket.peerPresent) {
@@ -94,8 +96,8 @@ class _HandDetectorViewState extends State<HandDetectorView> {
       if (_socket.serverUrl.isNotEmpty && !_socket.isConnected) {
         await _socket.joinRoom();
       }
-      _attachStream(_socket.localStream);
     }
+    _attachStream(_socket.localStream);
   }
 
   Future<bool> _ensurePermissions() async {
@@ -120,6 +122,17 @@ class _HandDetectorViewState extends State<HandDetectorView> {
     _attachedVideoTrackId = videoTrackId;
     _renderer.srcObject = stream;
     if (mounted) setState(() {});
+    // The video track often lands a beat AFTER the stream object itself
+    // (the detection pipeline hands the camera back). Re-check once so a
+    // late track cannot leave the self-view black.
+    if (stream != null && videoTrackId == null) {
+      Future.delayed(const Duration(milliseconds: 700), () {
+        if (!mounted) return;
+        if (_attachedVideoTrackId == null && _attachedStream != null) {
+          _attachStream(_socket.localStream);
+        }
+      });
+    }
   }
 
   void _onServiceChanged() {
@@ -132,6 +145,8 @@ class _HandDetectorViewState extends State<HandDetectorView> {
       _startDetectionPipeline();
     } else if (pipelineActive && (peerHere || !detecting)) {
       // Peer joined (camera must stream video) or detection switched off.
+      // _stopDetectionPipeline reacquires the camera for WebRTC and reattaches
+      // the local renderer once it has a live video track.
       _stopDetectionPipeline();
     }
 
@@ -153,7 +168,13 @@ class _HandDetectorViewState extends State<HandDetectorView> {
       }
     }
 
-    if (!pipelineActive) _attachStream(_socket.localStream);
+    // The local renderer must re-bind whenever the stream gains its video
+    // track back (the detection pipeline hands the camera to WebRTC and the
+    // same MediaStream object is reused). Without this the self-view stays
+    // black even though the peer receives video.
+    _attachStream(_socket.localStream);
+
+    if (mounted) setState(() {});
   }
 
   void _applyTrackStates() {
@@ -258,40 +279,102 @@ class _HandDetectorViewState extends State<HandDetectorView> {
     } catch (_) {}
   }
 
+  // ---------------- ML inference ----------------
+
+  /// Lowest probability at which a sign is accepted.
+  static const double _minConfidence = 0.45;
+
+  /// Below [_confidentLevel] the top guess must also beat the runner-up by
+  /// this margin, otherwise the sign is reported as uncertain instead of
+  /// guessing (this is what used to spam "Hello" for every open hand).
+  static const double _minMargin = 0.08;
+  static const double _confidentLevel = 0.60;
+
   void _classify(List<Hand> hands) {
-    if (hands.isEmpty) return;
+    if (hands.isEmpty || _pendingRequest || !_serverAvailable) return;
 
-    // Build 126-dim feature vector from hand landmarks
-    final featureVector = _buildFeatureVector(hands);
+    _pendingRequest = true;
+    _callInferenceServer(_buildFeatureVector(hands)).then((result) {
+      _pendingRequest = false;
+      _socket.markInfServerOnline(_socket.infServerUrl);
+      if (result != null) {
+        _processGestureResult(result.$1, result.$2);
+      } else {
+        _setUncertain();
+      }
+    }).catchError((_) {
+      _pendingRequest = false;
+      _handleServerOffline();
+    });
+  }
 
-    // Try ML inference server first
-    if (_serverAvailable && !_pendingRequest) {
-      _pendingRequest = true;
-      _callInferenceServer(featureVector).then((result) {
-        _pendingRequest = false;
-        if (result != null) {
-          _processGestureResult(result.$1, result.$2);
-        } else {
-          // Server returned null — fall back to rule-based
-          final fallback = _recognizeGesture(hands.first.landmarks);
-          _processGestureResult(fallback.$1, fallback.$2);
-        }
-      }).catchError((_) {
-        _pendingRequest = false;
-        _serverAvailable = false;
-        // Auto-retry after 10 seconds
-        Future.delayed(const Duration(seconds: 10), () {
-          _serverAvailable = true;
-        });
-        // Fallback to rule-based
-        final fallback = _recognizeGesture(hands.first.landmarks);
-        _processGestureResult(fallback.$1, fallback.$2);
-      });
-    } else {
-      // Server unavailable — use rule-based classifier
-      final result = _recognizeGesture(hands.first.landmarks);
-      _processGestureResult(result.$1, result.$2);
+  void _setUncertain() {
+    const msg = "Hold sign steady…";
+    if (_currentGesture == msg || !mounted) return;
+    setState(() => _currentGesture = msg);
+  }
+
+  void _handleServerOffline() {
+    if (!_serverAvailable) return;
+    _serverAvailable = false;
+    _socket.markInfServerOffline();
+    if (mounted) {
+      setState(() => _currentGesture = "ML server offline");
     }
+    _socket.addTranscript(
+      "System",
+      "Sign recognition server unreachable — set its URL in Settings "
+      "(e.g. http://192.168.1.10:5001). Retrying automatically.",
+      "system",
+    );
+    _retryServerLater();
+  }
+
+  void _retryServerLater() {
+    Future.delayed(const Duration(seconds: 10), () async {
+      if (!mounted || _serverAvailable) return;
+      final ok = await _socket.resolveInfServer();
+      if (!mounted) return;
+      if (ok) {
+        _serverAvailable = true;
+        setState(() => _currentGesture = "-");
+      } else {
+        _retryServerLater();
+      }
+    });
+  }
+
+  Future<(String, double)?> _callInferenceServer(List<double> features) async {
+    final base = _socket.infServerUrl.replaceAll(RegExp(r'/+$'), '');
+    if (base.isEmpty) throw StateError("inference server not configured");
+
+    final response = await http.post(
+      Uri.parse('$base/predict'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'landmarks': features}),
+    ).timeout(const Duration(milliseconds: 2500));
+
+    if (response.statusCode != 200) {
+      throw http.ClientException('inference server returned ${response.statusCode}');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final word = data['word']?.toString().trim() ?? '';
+    final confidence = (data['confidence'] as num?)?.toDouble() ?? 0;
+    if (word.isEmpty || confidence < _minConfidence) return null;
+
+    double second = 0;
+    final top5 = data['top5'];
+    if (top5 is List && top5.length > 1) {
+      final runnerUp = top5[1];
+      if (runnerUp is Map) {
+        second = (runnerUp['confidence'] as num?)?.toDouble() ?? 0;
+      }
+    }
+    if (confidence < _confidentLevel && (confidence - second) < _minMargin) {
+      return null;
+    }
+    return (word, confidence);
   }
 
   List<double> _buildFeatureVector(List<Hand> hands) {
@@ -308,26 +391,6 @@ class _HandDetectorViewState extends State<HandDetectorView> {
       }
     }
     return flat;
-  }
-
-  Future<(String, double)?> _callInferenceServer(List<double> features) async {
-    try {
-      final response = await http.post(
-        Uri.parse('$_infServerUrl/predict'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'landmarks': features}),
-      ).timeout(const Duration(milliseconds: 2000));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final word = data['word'] as String;
-        final confidence = (data['confidence'] as num).toDouble();
-        if (confidence >= 0.60) {
-          return (word, confidence);
-        }
-      }
-    } catch (_) {}
-    return null;
   }
 
   void _processGestureResult(String gesture, double confidence) {
@@ -347,7 +410,7 @@ class _HandDetectorViewState extends State<HandDetectorView> {
         confidence > 0 &&
         gesture != _lastBroadcastedGesture) {
       _lastBroadcastAt = now;
-      final conf = (confidence * 100).round().clamp(70, 99);
+      final conf = (confidence * 100).round().clamp(1, 99);
       _socket.simulateGesture(gesture, conf);
       _lastBroadcastedGesture = gesture;
     }
@@ -355,97 +418,6 @@ class _HandDetectorViewState extends State<HandDetectorView> {
     if (_currentGesture != gesture && mounted) {
       setState(() => _currentGesture = gesture);
     }
-  }
-
-  // ---------------- Starter geometric ISL-style classifier ----------------
-
-  static const _fingerTipsPips = [
-    [8, 6], // index
-    [12, 10], // middle
-    [16, 14], // ring
-    [20, 18], // pinky
-  ];
-
-  double _dist(Landmark a, Landmark b) =>
-      math.sqrt(math.pow(a.x - b.x, 2) + math.pow(a.y - b.y, 2));
-
-  (String, double) _recognizeGesture(List<Landmark> lm) {
-    if (lm.length < 21) return ("-", 0);
-
-    final wrist = lm[0];
-    final handSize = _dist(wrist, lm[9]);
-    if (handSize < 0.04) return ("Hand too far", 0);
-
-    bool fingerExtended(int tipIdx, int pipIdx) =>
-        _dist(wrist, lm[tipIdx]) > _dist(wrist, lm[pipIdx]) * 1.12;
-
-    final fingers = _fingerTipsPips.map((p) => fingerExtended(p[0], p[1])).toList();
-    final extendedCount = fingers.where((f) => f).length;
-
-    final thumbReach = _dist(lm[4], lm[5]) / handSize;
-    final thumbExtended = thumbReach > 1.15;
-    final thumbUp = thumbExtended && (wrist.y - lm[4].y) > handSize * 1.2;
-    final thumbDown = thumbExtended && (lm[4].y - wrist.y) > handSize * 0.5;
-    final pinchGap = _dist(lm[4], lm[8]) / handSize;
-
-    String gesture;
-    double confidence;
-
-    // FOOD: Fingertips pinched together
-    if (pinchGap < 0.45 && !fingers[1] && !fingers[2] && !fingers[3]) {
-      gesture = "Food";
-      confidence = 0.9;
-    }
-    // GOOD: Thumbs up (thumb extended upward, no other fingers)
-    else if (thumbUp && extendedCount == 0) {
-      gesture = "Good";
-      confidence = 0.88;
-    }
-    // BAD: Thumbs down (thumb extended downward)
-    else if (thumbDown && extendedCount == 0) {
-      gesture = "Bad";
-      confidence = 0.85;
-    }
-    // YES: Closed fist (no fingers extended)
-    else if (extendedCount == 0 && !thumbExtended) {
-      gesture = "Yes";
-      confidence = 0.85;
-    }
-    // LOVE: ILY shape (index + pinky extended, thumb extended)
-    else if (fingers[0] && !fingers[1] && !fingers[2] && fingers[3] && thumbExtended) {
-      gesture = "Love";
-      confidence = 0.88;
-    }
-    // WATER: W shape (index + middle + ring extended, pinky folded)
-    else if (fingers[0] && fingers[1] && fingers[2] && !fingers[3]) {
-      gesture = "Water";
-      confidence = 0.87;
-    }
-    // TIME: Index finger pointing up only
-    else if (fingers[0] && extendedCount == 1) {
-      gesture = "Time";
-      confidence = 0.86;
-    }
-    // NO: Index + middle extended (peace sign context = no)
-    else if (fingers[0] && fingers[1] && !fingers[2] && !fingers[3] && !thumbExtended) {
-      gesture = "No";
-      confidence = 0.87;
-    }
-    // HELP / STOP / PLEASE: All 5 fingers extended (open hand)
-    else if (extendedCount == 4 && thumbExtended) {
-      gesture = "Help";
-      confidence = 0.9;
-    }
-    // HELLO: 4 fingers extended without thumb spread (flat hand wave)
-    else if (extendedCount == 4) {
-      gesture = "Hello";
-      confidence = 0.85;
-    }
-    else {
-      gesture = "Detecting...";
-      confidence = 0;
-    }
-    return (gesture, confidence);
   }
 
   @override

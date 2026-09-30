@@ -554,7 +554,7 @@ body.mobile-app-body {
     display: flex;
     align-items: center;
     gap: 10px;
-    z-index: 40;
+    z-index: 100;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   }
 

@@ -1,11 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:socket_io_client/socket_io_client.dart' as sio;
 import 'signconnect_js_bridge.dart';
-import 'dart:io' show HttpClient, HttpClientRequest, HttpClientResponse;
+import 'dart:io' show HttpClient;
 
 enum AppRole { deaf, hearing }
 
@@ -17,6 +21,7 @@ class SocketService extends ChangeNotifier {
     if (!kIsWeb) {
       _initNativeStt();
     }
+    _loadInfServerConfig();
   }
 
   AppRole _currentRole = AppRole.deaf;
@@ -36,6 +41,101 @@ class SocketService extends ChangeNotifier {
   String _userName = "Alex Sharma";
   String _userEmail = "alex@signconnect.org";
   bool _isAuthenticated = false;
+
+  // ---- ML inference server (sign recognition) -------------------------------
+  // The classifier lives on the PC running inference_server.py. The phone has
+  // to reach it over the LAN, so the URL is configurable in Settings, persisted
+  // across restarts, and auto-probed against a couple of sensible candidates.
+  static const String _kInfServerPref = 'signconnect_inf_url';
+  String _savedInfServerUrl = "";
+  String _infServerUrl = "";
+  String _infServerStatus = "checking"; // checking | online | offline
+
+  String get infServerUrl => _infServerUrl;
+  String get savedInfServerUrl => _savedInfServerUrl;
+  String get infServerStatus => _infServerStatus;
+
+  /// Persists the user-configured inference URL and verifies it answers.
+  Future<void> setInfServerUrl(String url) async {
+    _savedInfServerUrl = url.trim();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kInfServerPref, _savedInfServerUrl);
+    await resolveInfServer(verbose: true);
+  }
+
+  Future<void> _loadInfServerConfig() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _savedInfServerUrl = prefs.getString(_kInfServerPref) ?? "";
+    } catch (_) {}
+    if (_savedInfServerUrl.isNotEmpty && _infServerUrl.isEmpty) {
+      _infServerUrl = _savedInfServerUrl;
+      notifyListeners();
+    }
+  }
+
+  List<String> _infServerCandidates() {
+    final candidates = <String>[];
+    if (_savedInfServerUrl.isNotEmpty) candidates.add(_savedInfServerUrl);
+    final host = Uri.tryParse(_serverUrl)?.host;
+    if (host != null && host.isNotEmpty) candidates.add('http://$host:5001');
+    if (!candidates.contains('http://127.0.0.1:5001')) {
+      candidates.add('http://127.0.0.1:5001');
+    }
+    return candidates;
+  }
+
+  /// Probes /health on every candidate URL and keeps the first one that
+  /// answers. Returns true when sign recognition is usable.
+  Future<bool> resolveInfServer({bool verbose = false}) async {
+    _infServerStatus = "checking";
+    notifyListeners();
+
+    for (final url in _infServerCandidates()) {
+      try {
+        final uri = Uri.parse("${url.replaceAll(RegExp(r'/+$'), '')}/health");
+        final response =
+            await http.get(uri).timeout(const Duration(seconds: 2));
+        if (response.statusCode == 200) {
+          _infServerUrl = uri.toString().replaceAll('/health', '');
+          _infServerStatus = "online";
+          if (verbose) {
+            addTranscript("System", "ML sign recognition online ($_infServerUrl)",
+                "system");
+          }
+          notifyListeners();
+          return true;
+        }
+      } catch (_) {}
+    }
+
+    _infServerStatus = "offline";
+    if (verbose) {
+      addTranscript(
+        "System",
+        "ML inference server unreachable. Open Settings and set its URL to "
+        "your computer's LAN address, e.g. http://192.168.1.10:5001",
+        "system",
+      );
+    }
+    notifyListeners();
+    return false;
+  }
+
+  /// Called by the detector when a prediction request fails mid-call.
+  void markInfServerOffline() {
+    if (_infServerStatus == "offline") return;
+    _infServerStatus = "offline";
+    notifyListeners();
+  }
+
+  /// Called by the detector when a prediction request succeeds.
+  void markInfServerOnline(String url) {
+    final changed = _infServerStatus != "online" || _infServerUrl != url;
+    _infServerStatus = "online";
+    if (_infServerUrl.isEmpty) _infServerUrl = url;
+    if (changed) notifyListeners();
+  }
 
   bool _isConnected = false;
   final List<Map<String, String>> _transcripts = [
@@ -62,7 +162,11 @@ class SocketService extends ChangeNotifier {
   rtc.MediaStream? _localStream;
   rtc.MediaStream? _remoteStream;
   bool _makingOffer = false;
-  bool _ignoreOffer = false;
+  Timer? _fallbackOfferTimer;
+  bool _hasSentFallbackOffer = false;
+  bool _joiningRoom = false;
+  String? _activeRoomId;
+  int _iceRestartAttempts = 0;
   List<Map<String, dynamic>>? _cachedIceServers;
 
   // ---- Native speech recognition ----
@@ -400,10 +504,60 @@ class SocketService extends ChangeNotifier {
   /// have been granted (the WebcamView widget drives that UX).
   Future<bool> ensureLocalMedia({bool audio = true}) async {
     if (kIsWeb) return false;
-    if (_localStream != null) return true;
+    final existing = _localStream;
+    if (existing != null) {
+      if (existing.getVideoTracks().isNotEmpty) {
+        // A peer connection created earlier (before permissions were granted,
+        // or while detection held the camera) may still be sending nothing —
+        // push every local track into it now.
+        await _syncLocalTracksToPeer();
+        return true;
+      }
+      // Stream exists but its video track was released to the detection
+      // pipeline — take the camera back so the self-view and the peer both
+      // get live video again.
+      return _attachFreshVideoTrack(existing);
+    }
     try {
       setMediaStatus("initializing");
-      final stream = await rtc.navigator.mediaDevices.getUserMedia({
+      final stream = await _getUserMediaWithPermission(audio: audio);
+      _localStream = stream;
+      _applyTrackStates();
+      setMediaStatus("ready");
+      // The connection may already exist: it is created the moment the peer
+      // sends an offer, which can happen before permissions were granted.
+      await _syncLocalTracksToPeer();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint("getUserMedia failed: $e");
+      setMediaStatus("error");
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// getUserMedia, requesting the runtime permission ourselves if the platform
+  /// rejects the first attempt (a room can be joined before the dashboard has
+  /// asked for camera/microphone access).
+  Future<rtc.MediaStream> _getUserMediaWithPermission({required bool audio}) async {
+    try {
+      return await rtc.navigator.mediaDevices.getUserMedia(_mediaConstraints(audio));
+    } catch (first) {
+      debugPrint("getUserMedia denied, requesting permission: $first");
+      final statuses = await [Permission.camera, Permission.microphone].request();
+      final granted = statuses.values.every((s) => s.isGranted);
+      if (!granted) {
+        setMediaStatus("permission_denied");
+        addTranscript(
+            "System", "Camera/microphone permission is required for the call.", "system");
+        rethrow;
+      }
+      return await rtc.navigator.mediaDevices.getUserMedia(_mediaConstraints(audio));
+    }
+  }
+
+  Map<String, dynamic> _mediaConstraints(bool audio) => {
         'audio': audio,
         'video': {
           'facingMode': 'user',
@@ -411,17 +565,7 @@ class SocketService extends ChangeNotifier {
           'height': {'ideal': 720},
           'frameRate': {'ideal': 30},
         },
-      });
-      _localStream = stream;
-      _applyTrackStates();
-      setMediaStatus("ready");
-      return true;
-    } catch (e) {
-      debugPrint("getUserMedia failed: $e");
-      setMediaStatus("error");
-      return false;
-    }
-  }
+      };
 
   void _applyTrackStates() {
     final stream = _localStream;
@@ -468,6 +612,19 @@ class SocketService extends ChangeNotifier {
   /// it back into the ongoing WebRTC session.
   Future<void> reacquireCameraAfterDetection() async {
     if (kIsWeb) return;
+    final local = _localStream;
+    if (local == null) {
+      await ensureLocalMedia();
+      return;
+    }
+    await _attachFreshVideoTrack(local);
+  }
+
+  /// Opens a new front-camera track and swaps it into [target], after first
+  /// dropping any stale video track the detection pipeline left behind.
+  /// Both the local renderer and the RTP sender bind videoTracks[0], so a
+  /// leftover stopped track would show as a black self-view.
+  Future<bool> _attachFreshVideoTrack(rtc.MediaStream target) async {
     try {
       final fresh = await rtc.navigator.mediaDevices.getUserMedia({
         'video': {
@@ -478,65 +635,77 @@ class SocketService extends ChangeNotifier {
         'audio': false,
       });
       final tracks = fresh.getVideoTracks();
-      if (tracks.isEmpty) return;
+      if (tracks.isEmpty) return false;
 
-      if (_localStream != null) {
-        for (final t in tracks) {
-          _localStream!.addTrack(t);
-        }
-      } else {
-        await ensureLocalMedia();
-        return;
+      for (final old in List<rtc.MediaStreamTrack>.from(target.getVideoTracks())) {
+        if (tracks.any((t) => t.id == old.id)) continue;
+        try {
+          await old.stop();
+        } catch (_) {}
+        try {
+          target.removeTrack(old);
+        } catch (_) {}
       }
+      for (final t in tracks) {
+        target.addTrack(t);
+      }
+
       _applyTrackStates();
-      await _ensureVideoSending(tracks.first);
+      setMediaStatus("ready");
+      await _ensureTrackSending(tracks.first);
+      notifyListeners();
+      return true;
     } catch (e) {
-      debugPrint("reacquireCameraAfterDetection: $e");
+      debugPrint("_attachFreshVideoTrack: $e");
+      setMediaStatus("error");
+      notifyListeners();
+      return false;
     }
-    notifyListeners();
   }
 
-  /// Makes sure the given video track is actually being sent to the peer.
-  /// 1. A sender already carries video -> replaceTrack (no renegotiation).
-  /// 2. A negotiated video transceiver exists but its sender track was nulled
-  ///    by releaseCameraForDetection -> replaceTrack + setDirection + renego.
+  /// Makes sure the given local track is actually being sent to the peer.
+  /// 1. A sender already carries this kind -> replaceTrack (no renegotiation).
+  /// 2. A negotiated transceiver exists but its sender track was nulled
+  ///    (releaseCameraForDetection) -> replaceTrack + setDirection + renego.
   /// 3. Nothing suitable (PeerConnection was created while detection held the
-  ///    camera, so it is audio-only) -> addTrack + renegotiate.
-  /// If no PeerConnection exists yet there is nothing to do: it picks up all
-  /// local stream tracks when it is created.
-  Future<void> _ensureVideoSending(rtc.MediaStreamTrack track) async {
+  ///    camera / before permissions were granted) -> addTrack + renegotiate.
+  /// Works for audio as well as video: the call stays silent forever if the
+  /// microphone track is only acquired after the connection was created.
+  Future<void> _ensureTrackSending(rtc.MediaStreamTrack track) async {
     final pc = _peerConnection;
     if (pc == null) return;
+    final kind = track.kind;
 
     try {
-      // 1. Sender already sending video.
+      // 1. Sender already sending this kind.
       final senders = await pc.getSenders();
       for (final s in senders) {
-        if (s.track?.kind == 'video') {
+        if (s.track?.kind == kind) {
+          if (s.track?.id == track.id) return; // nothing to do
           await senderReplaceTrack(s, track);
-          debugPrint("[WebRTC] Video track replaced on existing sender");
+          debugPrint("[WebRTC] $kind track replaced on existing sender");
           return;
         }
       }
 
-      // 2. Video transceiver negotiated earlier, sender track currently null.
+      // 2. Transceiver negotiated earlier, sender track currently null.
       final transceivers = await pc.getTransceivers();
       for (final t in transceivers) {
-        if (t.sender.track == null && t.receiver.track?.kind == 'video') {
+        if (t.sender.track == null && t.receiver.track?.kind == kind) {
           await senderReplaceTrack(t.sender, track);
           try {
             await t.setDirection(rtc.TransceiverDirection.SendRecv);
           } catch (e) {
             debugPrint("[WebRTC] setDirection(SendRecv): $e");
           }
-          debugPrint("[WebRTC] Video resumed on existing transceiver, renegotiating");
+          debugPrint("[WebRTC] $kind resumed on existing transceiver, renegotiating");
           await _renegotiateForVideo();
           return;
         }
       }
 
-      // 3. No video path at all — add the track (reuses a free video
-      //    transceiver if one exists) and renegotiate.
+      // 3. No path at all — add the track (reuses a free transceiver if one
+      //    exists) and renegotiate.
       final local = _localStream;
       if (local == null) return;
       final sender = await pc.addTrack(track, local);
@@ -550,10 +719,49 @@ class SocketService extends ChangeNotifier {
           break;
         }
       }
-      debugPrint("[WebRTC] Video addTrack done, renegotiating");
+      debugPrint("[WebRTC] $kind addTrack done, renegotiating");
       await _renegotiateForVideo();
     } catch (e) {
-      debugPrint("_ensureVideoSending: $e");
+      debugPrint("_ensureTrackSending: $e");
+    }
+  }
+
+  /// Pushes every local track the connection is not sending yet. Called when
+  /// the camera/microphone become available AFTER the peer connection was
+  /// created (permissions are only requested once the dashboard opens).
+  Future<void> _syncLocalTracksToPeer() async {
+    final pc = _peerConnection;
+    final local = _localStream;
+    if (pc == null || local == null) return;
+    try {
+      for (final track in local.getTracks()) {
+        await _ensureTrackSending(track);
+      }
+    } catch (e) {
+      debugPrint("syncLocalTracks: $e");
+    }
+  }
+
+  /// Best-effort recovery after ICE/connection failure: renegotiate with an
+  /// ICE restart so both sides gather fresh candidates.
+  Future<void> _recoverConnection() async {
+    if (_iceRestartAttempts >= 2) {
+      addTranscript("System",
+          "Could not recover the call automatically — leave and rejoin.",
+          "system");
+      return;
+    }
+    _iceRestartAttempts++;
+    for (var attempt = 0; attempt < 8; attempt++) {
+      await Future.delayed(const Duration(milliseconds: 750));
+      final pc = _peerConnection;
+      if (pc == null) return;
+      if (!_makingOffer &&
+          pc.signalingState == rtc.RTCSignalingState.RTCSignalingStateStable) {
+        addTranscript("System", "Restarting the connection (attempt $_iceRestartAttempts)…", "system");
+        await _createOfferToPeer(iceRestart: true);
+        return;
+      }
     }
   }
 
@@ -583,8 +791,27 @@ class SocketService extends ChangeNotifier {
   }
 
   /// Connects to the signaling server and joins the current room.
+  /// Safe to call from several places: joining twice would make the socket
+  /// leave and re-enter the room, which makes the peer tear the call down
+  /// and re-offer while we are still negotiating.
   Future<void> joinRoom() async {
     if (kIsWeb || _serverUrl.isEmpty) return;
+    if (_joiningRoom) return;
+    if (_activeRoomId == _currentRoomId &&
+        _socket != null &&
+        (_socket!.connected || _joiningRoom)) {
+      return; // already in (or joining) this room
+    }
+    _joiningRoom = true;
+    _activeRoomId = _currentRoomId;
+    try {
+      await _joinRoomImpl();
+    } finally {
+      _joiningRoom = false;
+    }
+  }
+
+  Future<void> _joinRoomImpl() async {
     await ensureLocalMedia();
 
     _socket?.dispose();
@@ -611,6 +838,8 @@ class SocketService extends ChangeNotifier {
           'roomId': _currentRoomId,
           'role': _currentRole == AppRole.deaf ? 'deaf' : 'hearing',
         });
+        // Find the ML inference server once we know which host we talk to.
+        resolveInfServer(verbose: true);
         notifyListeners();
       });
 
@@ -618,6 +847,7 @@ class SocketService extends ChangeNotifier {
         _isConnected = false;
         _isRemoteUserConnected = false;
         _peerPresent = false;
+        if (_socket == socket) _activeRoomId = null;
         addTranscript("System", "Disconnected from signaling server.", "system");
         notifyListeners();
       });
@@ -632,17 +862,33 @@ class SocketService extends ChangeNotifier {
         // Data: [ { id, role }, ... ] — used to detect peers already in room.
         if (data is List) {
           final others = data.whereType<Map>().where((p) => p['id'] != socket.id).length;
-          if (others > 0) {
-            _peerPresent = true;
-            notifyListeners();
-            if (_peerConnection == null) {
-              // A peer was already here before us; wait a beat then offer.
-              Future.delayed(const Duration(milliseconds: 600), () {
-                if (_peerConnection == null) {
-                  _createOfferToPeer();
-                }
-              });
-            }
+          final hadPeer = _peerPresent;
+          _peerPresent = others > 0;
+          if (_peerPresent && !hadPeer) notifyListeners();
+
+          // The side that was ALREADY in the room is told "user-joined" and
+          // sends the offer. We only ever offer from here as a last-resort
+          // fallback (event lost / socket reconnected) — offering twice makes
+          // both peers answer each other and the call never connects.
+          if (_peerPresent && _peerConnection == null && !_hasSentFallbackOffer) {
+            _fallbackOfferTimer?.cancel();
+            _fallbackOfferTimer = Timer(const Duration(seconds: 5), () {
+              if (_peerConnection == null &&
+                  _peerPresent &&
+                  _socket?.connected == true) {
+                _hasSentFallbackOffer = true;
+                addTranscript(
+                  "System",
+                  "No offer received from peer — starting call ourselves.",
+                  "system",
+                );
+                _createOfferToPeer();
+              }
+            });
+          }
+          if (!_peerPresent) {
+            _fallbackOfferTimer?.cancel();
+            _hasSentFallbackOffer = false;
           }
         }
       });
@@ -653,6 +899,8 @@ class SocketService extends ChangeNotifier {
           addTranscript("System", "Peer joined (${roleStr.isEmpty ? 'unknown' : roleStr} mode). Negotiating call...", "system");
           // Camera must belong to WebRTC while a peer is in the room.
           _peerPresent = true;
+          _hasSentFallbackOffer = false;
+          _fallbackOfferTimer?.cancel();
           notifyListeners();
           // Existing participant initiates the SDP offer.
           _createOfferToPeer();
@@ -662,6 +910,9 @@ class SocketService extends ChangeNotifier {
       socket.on('user-left', (data) {
         _isRemoteUserConnected = false;
         _peerPresent = false;
+        _fallbackOfferTimer?.cancel();
+        _hasSentFallbackOffer = false;
+        _iceRestartAttempts = 0;
         _teardownPeerConnection();
         addTranscript("System", "Your peer left the call.", "system");
         notifyListeners();
@@ -746,6 +997,14 @@ class SocketService extends ChangeNotifier {
       return existing;
     }
 
+    // The peer connection must not be built without local media: joining a
+    // room happens before the dashboard has asked for camera/microphone
+    // permission, and a connection created back then would send neither
+    // audio nor video for the whole call.
+    if (_localStream == null) {
+      await ensureLocalMedia();
+    }
+
     final iceServers = await _fetchIceServers();
     final config = {
       'iceServers': iceServers,
@@ -763,6 +1022,13 @@ class SocketService extends ChangeNotifier {
         if (track.kind == 'video') hasVideo = true;
         if (track.kind == 'audio') hasAudio = true;
       }
+      debugPrint("[WebRTC] PC created with local tracks "
+          "video=$hasVideo audio=$hasAudio");
+    } else {
+      debugPrint("[WebRTC] WARNING: PC created without any local track");
+      addTranscript("System",
+          "Camera/microphone unavailable — the peer will not see or hear you.",
+          "system");
     }
     // Always be able to RECEIVE media kinds we are not currently sending
     // (e.g. video while ISL detection still holds the camera).
@@ -780,7 +1046,9 @@ class SocketService extends ChangeNotifier {
       final firstConnect = !_isRemoteUserConnected;
       _isRemoteUserConnected = true;
       if (firstConnect) {
-        addTranscript("System", "Call connected! Video streaming both ways.", "system");
+        addTranscript("System",
+            "Peer media received (${event.track.kind ?? 'track'}) — call is live.",
+            "system");
       }
       notifyListeners();
     };
@@ -794,22 +1062,49 @@ class SocketService extends ChangeNotifier {
 
     pc.onConnectionState = (state) {
       debugPrint("PeerConnection state: $state");
-      if (state == rtc.RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-          state == rtc.RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-        _isRemoteUserConnected = false;
-        notifyListeners();
+      switch (state) {
+        case rtc.RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+          _iceRestartAttempts = 0;
+          addTranscript("System", "WebRTC connected.", "system");
+          break;
+        case rtc.RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+          _isRemoteUserConnected = false;
+          addTranscript("System", "Connection failed — trying to recover…", "system");
+          _recoverConnection();
+          break;
+        case rtc.RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+          addTranscript("System", "Connection interrupted…", "system");
+          break;
+        case rtc.RTCPeerConnectionState.RTCPeerConnectionStateClosed:
+          _isRemoteUserConnected = false;
+          break;
+        default:
+          break;
       }
+      notifyListeners();
     };
 
     _peerConnection = pc;
     return pc;
   }
 
-  Future<void> _createOfferToPeer() async {
+  Future<void> _createOfferToPeer({bool iceRestart = false}) async {
     try {
       final pc = await _getOrCreatePeerConnection();
+      // Never fire a second offer while one is outstanding or while we are
+      // answering — that desynchronises SDP and the call never connects.
+      if (_makingOffer ||
+          pc.signalingState != rtc.RTCSignalingState.RTCSignalingStateStable) {
+        debugPrint("[WebRTC] offer skipped (state=${pc.signalingState})");
+        return;
+      }
       _makingOffer = true;
-      final offer = await pc.createOffer({'offerToReceiveVideo': 1, 'offerToReceiveAudio': 1});
+      final options = <String, dynamic>{
+        'offerToReceiveVideo': 1,
+        'offerToReceiveAudio': 1,
+      };
+      if (iceRestart) options['iceRestart'] = true;
+      final offer = await pc.createOffer(options);
       await pc.setLocalDescription(offer);
       final desc = await pc.getLocalDescription();
       if (desc != null) {
@@ -817,6 +1112,7 @@ class SocketService extends ChangeNotifier {
           'roomId': _currentRoomId,
           'offer': desc.toMap(),
         });
+        debugPrint("[WebRTC] offer sent (iceRestart=$iceRestart)");
       }
     } catch (e) {
       debugPrint("createOffer error: $e");
@@ -831,11 +1127,31 @@ class SocketService extends ChangeNotifier {
       if (offer is! Map) return;
       final pc = await _getOrCreatePeerConnection();
 
-      final collision = _makingOffer || pc.signalingState != rtc.RTCSignalingState.RTCSignalingStateStable;
-      _ignoreOffer = collision;
-      if (_ignoreOffer) return;
+      final collision =
+          _makingOffer || pc.signalingState != rtc.RTCSignalingState.RTCSignalingStateStable;
+      if (collision) {
+        // Perfect negotiation: the peer with the LARGER socket id is "polite"
+        // and rolls back its own offer; the other side ignores the incoming
+        // one. Without this, both sides ignore each other's offer and the
+        // connection stays black/silent forever.
+        final myId = _socket?.id ?? '';
+        final peerId = data['senderId']?.toString() ?? '';
+        final polite = myId.isNotEmpty && peerId.isNotEmpty && myId.compareTo(peerId) > 0;
+        if (!polite) {
+          debugPrint("[WebRTC] offer ignored (collision, impolite peer)");
+          return;
+        }
+        debugPrint("[WebRTC] offer collision — rolling back own offer (polite)");
+        try {
+          await pc.setLocalDescription(rtc.RTCSessionDescription(null, 'rollback'));
+        } catch (e) {
+          debugPrint("[WebRTC] rollback failed: $e — ignoring offer");
+          return;
+        }
+      }
 
-      await pc.setRemoteDescription(rtc.RTCSessionDescription(offer['sdp'] as String, offer['type'] as String));
+      await pc.setRemoteDescription(
+          rtc.RTCSessionDescription(offer['sdp'] as String, offer['type'] as String));
       final answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       final desc = await pc.getLocalDescription();
@@ -844,9 +1160,11 @@ class SocketService extends ChangeNotifier {
           'roomId': _currentRoomId,
           'answer': desc.toMap(),
         });
+        debugPrint("[WebRTC] answer sent");
       }
     } catch (e) {
       debugPrint("handleOffer error: $e");
+      addTranscript("System", "Call negotiation error: $e", "system");
     }
   }
 

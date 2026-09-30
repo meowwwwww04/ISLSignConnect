@@ -23,6 +23,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _phoneController = TextEditingController();
   final _locationController = TextEditingController();
   final _bioController = TextEditingController();
+  // ML inference server URL — defaults to localhost; override to point the
+  // phone at the computer's IP so two-device gesture recognition works.
+  final _infServerController = TextEditingController();
 
   @override
   void initState() {
@@ -37,6 +40,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _phoneController.text = account?.phone ?? "";
     _locationController.text = account?.location ?? "";
     _bioController.text = account?.bio ?? "";
+    _infServerController.text = _socket.infServerUrl;
   }
 
   Future<void> _saveProfileEdits({AppRole? newRole}) async {
@@ -59,6 +63,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         micSensitivity: updated.micSensitivity,
         vocabularyFocus: updated.vocabularyFocus,
       );
+      // Persist the ML inference server URL so the phone keeps pointing at
+      // the right machine after a rebuild.
+      _socket.setInfServerUrl(_infServerController.text);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Profile saved for ${updated.name}"),
@@ -202,6 +209,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                           Expanded(child: _buildCameraCard()),
                                           const SizedBox(width: 20),
                                           Expanded(child: _buildMicSensitivityCard()),
+                                          const SizedBox(width: 20),
+                                          Expanded(child: _buildInfServerCard()),
                                         ],
                                       )
                                     : Column(
@@ -209,6 +218,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                           _buildCameraCard(),
                                           const SizedBox(height: 16),
                                           _buildMicSensitivityCard(),
+                                          const SizedBox(height: 16),
+                                          _buildInfServerCard(),
                                         ],
                                       );
                               },
@@ -710,6 +721,147 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildInfServerCard() {
+    final status = _socket.infServerStatus;
+    final Color statusColor = status == "online"
+        ? AppTheme.accentGreen
+        : status == "offline"
+            ? Colors.redAccent
+            : AppTheme.brandOrange;
+    final String statusLabel = status == "online"
+        ? "ML SERVER ONLINE"
+        : status == "offline"
+            ? "ML SERVER OFFLINE"
+            : "CHECKING\u2026";
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.bgCardSecondary,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                "ML Sign Server",
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    statusLabel,
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                      color: statusColor,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "The sign classifier runs on your computer (inference_server.py). "
+            "Point the phone at it over the same Wi-Fi network, e.g. "
+            "http://192.168.1.10:5001",
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 12,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _infServerController,
+            keyboardType: TextInputType.url,
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 11,
+              color: AppTheme.textPrimary,
+            ),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: "http://192.168.1.10:5001",
+              hintStyle: GoogleFonts.jetBrainsMono(
+                fontSize: 11,
+                color: AppTheme.textMuted,
+              ),
+              filled: true,
+              fillColor: AppTheme.bgCard,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: AppTheme.borderColor),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: AppTheme.borderColor),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: AppTheme.brandOrangeDark),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.brandOrangeDark,
+                side: const BorderSide(color: AppTheme.borderColor),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: _testInfServer,
+              icon: const Icon(Icons.network_check, size: 16),
+              label: Text(
+                "Save & Test",
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _testInfServer() async {
+    await _socket.setInfServerUrl(_infServerController.text);
+    if (!mounted) return;
+    final online = _socket.infServerStatus == "online";
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          online
+              ? "ML sign recognition online at ${_socket.infServerUrl}"
+              : "Could not reach that server. Check the URL and that "
+                  "inference_server.py is running on your computer.",
+        ),
+        backgroundColor: online ? AppTheme.accentGreen : Colors.redAccent,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }

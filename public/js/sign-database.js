@@ -147,14 +147,7 @@ const ISL_DATABASE = {
       handCount: 1,
       vectorAnimation: "no"
     },
-    "stop": {
-      label: "Stop / Ruko (ISL)",
-      category: "Commands",
-      description: "Flat open palm facing forward towards recipient",
-      handCount: 1,
-      vectorAnimation: "stop"
-    },
-"thank you": {
+    "thank you": {
       label: "Thank You / Dhanyawad (ISL)",
       category: "Polite Expressions",
       description: "Dominant hand touches chin/forehead and moves to non-dominant open palm",
@@ -195,13 +188,6 @@ const ISL_DATABASE = {
       description: "Flat open palm facing forward towards recipient",
       handCount: 1,
       vectorAnimation: "stop"
-    },,
-    "please_OLD": {
-      label: "Please / Kripya (ISL)",
-      category: "Polite Expressions",
-      description: "Flat open palm resting over chest area",
-      handCount: 1,
-      vectorAnimation: "please"
     }
   }
 };
