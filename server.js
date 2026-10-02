@@ -129,7 +129,18 @@ io.on("connection", (socket) => {
       senderId: socket.id,
       word: data.word,
       confidence: data.confidence,
+      origin: data.origin,
       timestamp: Date.now()
+    });
+  });
+
+  socket.on("room-log", (data) => {
+    if (!data || !data.roomId || !data.msg) return;
+    console.log(`[Room ${data.roomId}] ${data.msg}`);
+    socket.to(data.roomId).emit("room-log", {
+      senderId: socket.id,
+      msg: data.msg,
+      t: Date.now()
     });
   });
 

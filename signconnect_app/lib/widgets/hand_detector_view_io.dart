@@ -108,11 +108,19 @@ class _HandDetectorViewState extends State<HandDetectorView> {
     return statuses.values.every((s) => s.isGranted);
   }
 
-  void _attachStream(rtc.MediaStream? stream) {
+  Future<void> _attachStream(rtc.MediaStream? stream) async {
     if (!_rendererReady) return;
-    // Re-set srcObject whenever the video track appears/changes: the native
-    // renderer only binds videoTracks[0] at set-time and detection release /
+    // Re-set the renderer whenever the video track appears/changes: the
+    // native renderer only binds a track at set-time and detection release /
     // reacquire swaps tracks while the stream object stays the same.
+    //
+    // Bind the chosen track BY ID (setSrcObject) instead of assigning
+    // srcObject: the stream can still carry a stopped/dead track at index 0
+    // (removing it natively fails once the track has been disposed), and the
+    // plain srcObject setter always renders videoTracks[0]. That is exactly
+    // how the self-view went black — the plugin bound the fresh track when
+    // it was added, then a later re-bind from here overrode it with the dead
+    // one at index 0.
     final videoTracks = stream?.getVideoTracks() ?? const <rtc.MediaStreamTrack>[];
     final videoTrackId = videoTracks.isNotEmpty ? videoTracks.first.id : null;
     if (identical(stream, _attachedStream) && videoTrackId == _attachedVideoTrackId) {
@@ -120,7 +128,16 @@ class _HandDetectorViewState extends State<HandDetectorView> {
     }
     _attachedStream = stream;
     _attachedVideoTrackId = videoTrackId;
-    _renderer.srcObject = stream;
+    if (stream != null && videoTrackId != null) {
+      try {
+        await _renderer.setSrcObject(stream: stream, trackId: videoTrackId);
+      } catch (e) {
+        debugPrint("_attachStream setSrcObject failed: $e");
+        _renderer.srcObject = stream;
+      }
+    } else {
+      _renderer.srcObject = stream;
+    }
     if (mounted) setState(() {});
     // The video track often lands a beat AFTER the stream object itself
     // (the detection pipeline hands the camera back). Re-check once so a

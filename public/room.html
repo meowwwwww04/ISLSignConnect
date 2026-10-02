@@ -155,6 +155,27 @@
       display: none;
     }
 
+    #soundHint {
+      position: absolute;
+      left: 50%;
+      bottom: 120px;
+      transform: translateX(-50%);
+      z-index: 6;
+      background: rgba(15, 23, 42, .92);
+      border: 1px solid #f97316;
+      color: #fdba74;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 16px;
+      border-radius: 999px;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    #soundHint[hidden] {
+      display: none;
+    }
+
     .controls {
       display: flex;
       justify-content: center;
@@ -181,8 +202,159 @@
       background: #ef4444;
     }
 
+    .ctrl.on {
+      background: #f97316;
+      box-shadow: 0 0 0 2px rgba(249, 115, 22, .35);
+    }
+
+    .ctrl.danger {
+      background: #7f1d1d;
+      border: 1px solid #ef4444;
+    }
+
     .ctrl:active {
       transform: scale(.94);
+    }
+
+    /* Swap main / picture-in-picture feeds */
+    .stage.swapped #remoteVideo {
+      position: absolute;
+      right: 12px;
+      bottom: 16px;
+      width: 32vw;
+      max-width: 150px;
+      min-width: 96px;
+      height: auto;
+      aspect-ratio: 3 / 4;
+      object-fit: cover;
+      border-radius: 14px;
+      border: 2px solid #f97316;
+      background: #111827;
+      z-index: 3;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+      transform: scaleX(-1);
+    }
+
+    .stage.swapped #localVideo {
+      position: static;
+      width: 100%;
+      height: 100%;
+      max-width: none;
+      min-width: 0;
+      aspect-ratio: auto;
+      border: none;
+      border-radius: 0;
+      box-shadow: none;
+      transform: none;
+      z-index: auto;
+    }
+
+    /* Captions: big signed word, rolling subtitle, history log */
+    #signBanner {
+      position: absolute;
+      left: 50%;
+      top: 18%;
+      transform: translateX(-50%) scale(.9);
+      display: none;
+      align-items: baseline;
+      gap: 10px;
+      padding: 14px 22px;
+      background: rgba(15, 23, 42, .86);
+      border: 1px solid #f97316;
+      border-radius: 18px;
+      font-size: clamp(28px, 7vw, 54px);
+      font-weight: 800;
+      color: #f97316;
+      z-index: 5;
+      pointer-events: none;
+      text-transform: capitalize;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+    }
+
+    #signBanner.show {
+      display: flex;
+      animation: pop .25s ease-out;
+    }
+
+    #signBanner .cap-conf {
+      font-size: 14px;
+      font-weight: 600;
+      color: #9ca3af;
+    }
+
+    #captionLine {
+      position: absolute;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      display: none;
+      width: min(92%, 760px);
+      text-align: center;
+      padding: 12px 16px;
+      background: rgba(17, 24, 39, .92);
+      border: 1px solid #374151;
+      border-radius: 14px;
+      font-size: clamp(16px, 3.4vw, 22px);
+      line-height: 1.4;
+      font-weight: 600;
+      color: #f3f4f6;
+      z-index: 4;
+      text-transform: capitalize;
+    }
+
+    #captionLine.show {
+      display: block;
+    }
+
+    #capLog {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      width: min(48%, 300px);
+      max-height: 46%;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px;
+      background: rgba(15, 23, 42, .82);
+      border: 1px solid #1f2937;
+      border-radius: 12px;
+      z-index: 4;
+      scrollbar-width: thin;
+    }
+
+    #capLog.hidden {
+      display: none;
+    }
+
+    .cap-row {
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .cap-row .cap-time {
+      color: #6b7280;
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+
+    .cap-row.sign .cap-text {
+      color: #f97316;
+      font-weight: 700;
+      text-transform: capitalize;
+    }
+
+    .cap-row.speech .cap-text {
+      color: #e5e7eb;
+    }
+
+    .cap-row.system .cap-text {
+      color: #93c5fd;
+      font-style: italic;
     }
   </style>
 </head>
@@ -198,12 +370,17 @@
     <video id="remoteVideo" autoplay playsinline></video>
     <video id="localVideo" autoplay playsinline muted></video>
 
+    <div id="signBanner" aria-live="polite"></div>
+    <div id="captionLine" aria-live="polite"></div>
+    <div id="capLog" class="hidden" aria-live="polite"></div>
+    <div id="soundHint" hidden>🔊 Tap anywhere to enable sound</div>
+
     <div id="waiting">
       <div class="avatar">👤</div>
       <div id="waitingTitle">Waiting for peer…</div>
       <div id="waitingSub">
         Open this page on both devices (or share this link) — joins the same room.<br />
-        No app install needed.
+        <span>No app install needed.</span>
       </div>
       <button id="permBtn">Allow camera &amp; microphone</button>
       <div id="errMsg"></div>
@@ -213,21 +390,42 @@
   <div class="controls">
     <button class="ctrl" id="btnMic" title="Toggle microphone">🎙️</button>
     <button class="ctrl" id="btnCam" title="Toggle camera">📹</button>
+    <button class="ctrl" id="btnSwap" title="Swap main / picture-in-picture">🔄</button>
+    <button class="ctrl" id="btnCap" title="Show / hide captions">CC</button>
+    <button class="ctrl" id="btnStt" title="Live captions: turn your speech into text for your peer">📝</button>
+    <button class="ctrl danger" id="btnLeave" title="End call">🚪</button>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="/js/isl-model-data.js"></script>
+  <script src="/js/isl-local-inference.js"></script>
+  <script src="/js/gesture-recognition.js"></script>
   <script>
     (function () {
       const localVideo = document.getElementById("localVideo");
       const remoteVideo = document.getElementById("remoteVideo");
       const waitingEl = document.getElementById("waiting");
       const waitingTitle = document.getElementById("waitingTitle");
+      const waitingSub = document.getElementById("waitingSub");
       const statusChip = document.getElementById("statusChip");
       const roomChip = document.getElementById("roomChip");
       const errMsg = document.getElementById("errMsg");
       const permBtn = document.getElementById("permBtn");
       const btnMic = document.getElementById("btnMic");
       const btnCam = document.getElementById("btnCam");
+      const btnSwap = document.getElementById("btnSwap");
+      const btnCap = document.getElementById("btnCap");
+      const btnStt = document.getElementById("btnStt");
+      const btnLeave = document.getElementById("btnLeave");
+      const stage = document.querySelector(".stage");
+      const signBanner = document.getElementById("signBanner");
+      const captionLine = document.getElementById("captionLine");
+      const capLog = document.getElementById("capLog");
+      const soundHint = document.getElementById("soundHint");
+
+      const DEFAULT_SUB =
+        "Open this page on both devices (or share this link) — joins the same room.<br /><span>No app install needed.</span>";
 
       const match = window.location.pathname.match(/\/room\/([^\/?#]+)/);
       const roomId = match ? decodeURIComponent(match[1]) : "signconnect-room";
@@ -238,12 +436,82 @@
       let socket = null;
       let pendingCandidates = [];
       let hasRemote = false;
+      let leftCall = false;
+      let capsOn = true;
+      let makingOffer = false;
+      let iceRestarts = 0;
+      let stt = null;
+      let sttOn = false;
+      let bannerTimer = null;
+      let lineTimer = null;
+      // All incoming remote tracks land in ONE persistent MediaStream so a
+      // stream-less track (phone video renegotiated via replaceTrack has no
+      // msid) can never overwrite the element with `undefined` — that bug
+      // wiped both the picture and the sound for the whole call.
+      let remoteStream = null;
 
       const FALLBACK_ICE = [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
       ];
       let iceServers = FALLBACK_ICE;
+
+      // ---- diagnostics: console + relayed to the peer app via socket ----
+      function wlog(msg) {
+        console.log("[Room] " + msg);
+        if (socket && socket.connected) {
+          socket.emit("room-log", { roomId, msg });
+        }
+      }
+
+      // ---- captions: what the other person signed / said ---------------
+      function pushLog(kind, text) {
+        const row = document.createElement("div");
+        row.className = "cap-row " + kind;
+        const time = document.createElement("span");
+        time.className = "cap-time";
+        time.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const body = document.createElement("span");
+        body.className = "cap-text";
+        body.textContent = text;
+        row.append(time, body);
+        capLog.prepend(row);
+        while (capLog.children.length > 40) capLog.removeChild(capLog.lastChild);
+        capLog.classList.remove("hidden");
+      }
+
+      function showSign(word, confidence) {
+        if (!capsOn || !word) return;
+        signBanner.textContent = "";
+        const w = document.createElement("span");
+        w.textContent = word;
+        signBanner.appendChild(w);
+        if (confidence != null) {
+          const c = document.createElement("span");
+          c.className = "cap-conf";
+          c.textContent = confidence + "%";
+          signBanner.appendChild(c);
+        }
+        signBanner.classList.add("show");
+        clearTimeout(bannerTimer);
+        bannerTimer = setTimeout(() => signBanner.classList.remove("show"), 1600);
+
+        captionLine.textContent = word;
+        captionLine.classList.add("show");
+        clearTimeout(lineTimer);
+        lineTimer = setTimeout(() => captionLine.classList.remove("show"), 4000);
+
+        pushLog("sign", word + (confidence != null ? " (" + confidence + "%)" : ""));
+      }
+
+      function showSpeech(text) {
+        if (!capsOn || !text) return;
+        captionLine.textContent = text;
+        captionLine.classList.add("show");
+        clearTimeout(lineTimer);
+        lineTimer = setTimeout(() => captionLine.classList.remove("show"), 6000);
+        pushLog("speech", text);
+      }
 
       function setStatus(text, live) {
         statusChip.textContent = text;
@@ -268,7 +536,7 @@
         } catch (e) {
           console.warn("[Room] ICE fetch failed, using STUN only", e);
         }
-        console.log("[Room] ICE servers:", iceServers.length);
+        wlog("ICE servers: " + iceServers.length);
       }
 
       async function startMedia() {
@@ -281,10 +549,11 @@
           localVideo.srcObject = localStream;
           await localVideo.play().catch(() => { });
           permBtn.style.display = "none";
-          console.log("[Room] Local media OK");
+          wlog("local media OK (v=" + localStream.getVideoTracks().length +
+            " a=" + localStream.getAudioTracks().length + ")");
           return true;
         } catch (e) {
-          console.error("[Room] getUserMedia failed:", e);
+          wlog("getUserMedia failed: " + e.message);
           showError(
             "Camera/microphone access was blocked. Tap the button below to allow, " +
             "or enable it in your browser's site settings."
@@ -293,33 +562,77 @@
         }
       }
 
+      // Browsers can refuse to PLAY remote audio until the user interacts
+      // with the page. Retry with sound on every gesture so the peer is
+      // never silently muted.
+      function ensureRemotePlaying() {
+        if (!remoteVideo.srcObject) return;
+        remoteVideo.muted = false;
+        remoteVideo.play().then(() => {
+          soundHint.hidden = true;
+        }).catch((err) => {
+          if (err && err.name === "NotAllowedError") {
+            soundHint.hidden = false;
+            wlog("remote autoplay blocked — waiting for a tap");
+          } else {
+            wlog("remote play() error: " + (err && err.message));
+          }
+        });
+      }
+      ["pointerdown", "keydown", "touchend"].forEach((ev) => {
+        document.addEventListener(ev, ensureRemotePlaying, { passive: true });
+      });
+      remoteVideo.addEventListener("canplay", ensureRemotePlaying);
+
       function createPeer() {
         closePeer();
         pc = new RTCPeerConnection({ iceServers });
         pc.onicecandidate = (e) => {
           if (e.candidate && socket && socket.connected) {
+            wlog("ice → " + String(e.candidate.candidate).slice(0, 40));
             socket.emit("ice-candidate", { roomId, candidate: e.candidate });
           }
         };
         pc.ontrack = (e) => {
-          console.log("[Room] Remote track arrived");
-          remoteVideo.srcObject = e.streams[0];
-          remoteVideo.play().catch(() => { });
+          // Never assign e.streams[0] directly: renegotiated tracks from the
+          // app arrive with streams=[] (no msid) and that assigned
+          // undefined, wiping previously attached audio — the whole reason
+          // the peer could neither see nor hear the app side.
+          if (!remoteStream) remoteStream = new MediaStream();
+          if (!remoteStream.getTracks().some((t) => t.id === e.track.id)) {
+            try { remoteStream.addTrack(e.track); } catch (err) { }
+          }
+          remoteVideo.srcObject = remoteStream;
+          wlog("remote track: kind=" + e.track.kind + " id=" + e.track.id +
+            " streams=" + e.streams.length);
+          ensureRemotePlaying();
           hasRemote = true;
           waitingEl.classList.add("hidden");
           setStatus("Connected", true);
         };
         pc.onconnectionstatechange = () => {
-          console.log("[Room] PC state:", pc.connectionState);
+          wlog("PC state: " + pc.connectionState);
           if (pc.connectionState === "connected") {
             waitingEl.classList.add("hidden");
+            iceRestarts = 0;
             setStatus("Connected", true);
           } else if (pc.connectionState === "failed") {
             setStatus("Reconnecting…", false);
-            resetRemoteView();
+            if (iceRestarts < 2) {
+              iceRestarts++;
+              logSystem("Connection failed — recovering (attempt " + iceRestarts + ")");
+              startOffer(true);
+            } else {
+              logSystem("Connection failed. Leave and rejoin the call.");
+            }
           } else if (pc.connectionState === "disconnected") {
             setStatus("Peer link interrupted…", false);
+          } else if (pc.connectionState === "connecting") {
+            setStatus("Connecting video…", false);
           }
+        };
+        pc.oniceconnectionstatechange = () => {
+          wlog("ICE state: " + pc.iceConnectionState);
         };
         if (localStream) {
           localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
@@ -333,29 +646,128 @@
           pc = null;
         }
         pendingCandidates = [];
+        remoteStream = null;
       }
 
       function resetRemoteView() {
         hasRemote = false;
+        remoteStream = null;
         remoteVideo.srcObject = null;
         waitingEl.classList.remove("hidden");
-        waitingTitle.textContent = "Waiting for peer…";
-        setStatus("In room", false);
+        waitingTitle.textContent = leftCall ? "Call ended" : "Waiting for peer…";
+        waitingSub.innerHTML = leftCall
+          ? "You left the room. Tap below to rejoin."
+          : DEFAULT_SUB;
+        if (!leftCall) setStatus("In room", false);
       }
 
-      async function startOffer() {
+      function logSystem(text) {
+        wlog(text);
+        if (typeof pushLog === "function") pushLog("system", text);
+      }
+
+      async function startOffer(iceRestart) {
         if (!localStream) {
           const ok = await startMedia();
           if (!ok) return;
         }
-        const peer = createPeer();
+        // Only ever one outstanding offer: a second one makes both sides
+        // answer each other and the call stays black and silent.
+        if (makingOffer) return;
+        const peer = pc || createPeer();
+        if (peer.signalingState !== "stable") {
+          wlog("startOffer deferred (state=" + peer.signalingState + ")");
+          return;
+        }
+        makingOffer = true;
         try {
-          const offer = await peer.createOffer();
+          const offer = await peer.createOffer(iceRestart ? { iceRestart: true } : {});
           await peer.setLocalDescription(offer);
           socket.emit("offer", { roomId, offer: peer.localDescription });
-          console.log("[Room] Offer sent");
+          wlog("offer sent (iceRestart=" + !!iceRestart + ")");
         } catch (e) {
-          console.error("[Room] createOffer failed", e);
+          wlog("createOffer failed: " + e.message);
+          logSystem("Offer failed: " + e.message);
+        } finally {
+          makingOffer = false;
+        }
+      }
+
+      // ---- sign recognition: local camera AND the peer's incoming video --
+      // Both directions get captioned without needing a second camera: the
+      // classifier (browser-side model) reads decoded frames from either
+      // <video>. Local signs are broadcast to the phone; signs recognised
+      // on the incoming stream belong to the phone user, so they are
+      // echoed back with origin:"self" for the app's own transcript.
+      let hands = null;
+      let handsBusy = false;
+      let pendingTarget = null;
+      let recogFlip = false;
+      const localClassifier = window.islGestureClassifier || new ISLGestureClassifier();
+      const remoteClassifier = new ISLGestureClassifier();
+
+      function initHands() {
+        if (typeof Hands === "undefined") {
+          wlog("MediaPipe Hands unavailable (CDN) — video sign captions disabled");
+          return;
+        }
+        try {
+          hands = new Hands({
+            locateFile: (file) => "https://cdn.jsdelivr.net/npm/@mediapipe/hands/" + file,
+          });
+          hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.5,
+          });
+          hands.onResults(onHandsResults);
+          wlog("MediaPipe Hands + local ISL model ready (local inference: " +
+            (window.ISLLocalPredict && window.ISLLocalPredict.ready()) + ")");
+        } catch (e) {
+          wlog("Hands init error: " + e.message);
+        }
+      }
+
+      async function recogTick() {
+        if (!hands || handsBusy) return;
+        recogFlip = !recogFlip;
+        const target = recogFlip ? remoteVideo : localVideo;
+        if (!target || target.readyState < 2 || !target.videoWidth) return;
+        pendingTarget = target;
+        handsBusy = true;
+        try {
+          await hands.send({ image: target });
+        } catch (e) {
+          // "no hand" frames throw nothing; log only unexpected errors.
+          if (!/length|landmark/i.test(String(e && e.message))) {
+            wlog("Hands frame error: " + (e && e.message));
+          }
+        }
+        handsBusy = false;
+      }
+
+      async function onHandsResults(results) {
+        const target = pendingTarget;
+        if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) return;
+        if (!socket || !socket.connected) return;
+        try {
+          const isLocal = target === localVideo;
+          const classifier = isLocal ? localClassifier : remoteClassifier;
+          const r = await classifier.classify(results.multiHandLandmarks);
+          if (!r) return;
+          showSign(r.label, r.confidence);
+          if (isLocal) {
+            socket.emit("gesture-recognized", { roomId, word: r.word, confidence: r.confidence });
+            wlog("sign(local) " + r.word + " " + r.confidence + "% → broadcast");
+          } else {
+            socket.emit("gesture-recognized", {
+              roomId, word: r.word, confidence: r.confidence, origin: "self",
+            });
+            wlog("sign(remote) " + r.word + " " + r.confidence + "% → echo self");
+          }
+        } catch (e) {
+          wlog("classify error: " + (e && e.message));
         }
       }
 
@@ -363,39 +775,82 @@
         socket = io({ transports: ["websocket", "polling"] });
 
         socket.on("connect", () => {
-          console.log("[Room] Socket connected", socket.id);
+          wlog("socket connected " + socket.id);
           setStatus("In room", false);
           socket.emit("join-room", { roomId, role: "hearing" });
+          // Debug/test hook: lets automated tests drive captions + signaling.
+          window.__room = {
+            socket, roomId, showSign, showSpeech, pushLog, wlog,
+            emitGesture: (word, confidence, origin) =>
+              socket.emit("gesture-recognized", { roomId, word, confidence, origin }),
+            emitSpeech: (text) =>
+              socket.emit("speech-transcript", { roomId, text, isFinal: true }),
+            mediaStats,
+          };
         });
 
         socket.on("connect_error", (err) => {
-          console.warn("[Room] socket error", err);
+          wlog("socket error: " + (err && err.message));
           setStatus("Server retrying…", false);
         });
 
         socket.on("room-participants", (participants) => {
-          console.log("[Room] participants:", participants.length);
+          wlog("participants: " + participants.length);
           if (!hasRemote && participants.length > 1) {
             waitingTitle.textContent = "Peer joined — connecting video…";
           }
         });
 
         socket.on("user-joined", () => {
-          console.log("[Room] Peer joined, sending offer");
+          wlog("peer joined — sending offer");
           resetRemoteView();
           waitingTitle.textContent = "Peer joined — starting call…";
           startOffer();
         });
 
         socket.on("user-left", () => {
-          console.log("[Room] Peer left");
+          wlog("peer left");
           resetRemoteView();
+          pushLog("system", "Peer left the call");
+        });
+
+        // The other side's signs and speech — this is what makes the page
+        // usable for a hearing friend talking to the ISL app.
+        socket.on("gesture-recognized", (data) => {
+          wlog("gesture-recognized ← " + (data && data.word));
+          showSign(data && data.word, data && data.confidence);
+        });
+
+        socket.on("speech-transcript", (data) => {
+          wlog("speech-transcript ← " + String(data && data.text).slice(0, 60));
+          showSpeech(data && data.text);
         });
 
         socket.on("offer", async (data) => {
-          console.log("[Room] Offer received");
+          wlog("offer received (state=" + (pc ? pc.signalingState : "no-pc") + ")");
           try {
             const peer = pc || createPeer();
+            const collision = makingOffer || peer.signalingState !== "stable";
+            if (collision) {
+              // Perfect negotiation: the side with the larger socket id is
+              // polite and rolls back its own offer, the other side ignores
+              // this one. Without it both sides wait for each other forever.
+              const myId = socket.id || "";
+              const peerId = (data && data.senderId) || "";
+              const polite = myId && peerId && myId > peerId;
+              if (!polite) {
+                wlog("colliding offer ignored (impolite peer)");
+                logSystem("Ignoring colliding offer (impolite peer)");
+                return;
+              }
+              logSystem("Offer collision — rolling back own offer");
+              try {
+                await peer.setLocalDescription({ type: "rollback" });
+              } catch (e) {
+                wlog("rollback failed: " + e.message);
+                return;
+              }
+            }
             await peer.setRemoteDescription(new RTCSessionDescription(data.offer));
             const queued = pendingCandidates;
             pendingCandidates = [];
@@ -405,14 +860,15 @@
             const answer = await peer.createAnswer();
             await peer.setLocalDescription(answer);
             socket.emit("answer", { roomId, answer: peer.localDescription });
-            console.log("[Room] Answer sent");
+            wlog("answer sent");
           } catch (e) {
+            wlog("offer handling failed: " + e.message);
             console.error("[Room] offer handling failed", e);
           }
         });
 
         socket.on("answer", async (data) => {
-          console.log("[Room] Answer received");
+          wlog("answer received (state=" + (pc ? pc.signalingState : "no-pc") + ")");
           try {
             if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
             const queued = pendingCandidates;
@@ -421,6 +877,7 @@
               try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { }
             }
           } catch (e) {
+            wlog("answer handling failed: " + e.message);
             console.error("[Room] answer handling failed", e);
           }
         });
@@ -433,9 +890,39 @@
               pendingCandidates.push(data.candidate);
             }
           } catch (e) {
-            console.warn("[Room] addIceCandidate failed", e);
+            wlog("addIceCandidate failed: " + (e && e.message));
           }
         });
+      }
+
+      // Direction proof for tests: bytesSent AND bytesReceived per kind.
+      async function mediaStats() {
+        if (!pc) return null;
+        const out = {
+          bytesSent: 0, bytesReceived: 0,
+          audioSent: 0, audioReceived: 0,
+          videoSent: 0, videoReceived: 0,
+          remoteVideoWidth: remoteVideo.videoWidth,
+          remotePlaying: !remoteVideo.paused,
+          remoteMuted: remoteVideo.muted,
+          hasRemoteTrack: !!remoteStream && remoteStream.getTracks().length > 0,
+          state: pc.connectionState,
+        };
+        try {
+          const stats = await pc.getStats();
+          stats.forEach((r) => {
+            if (r.type === "outbound-rtp" && !r.isRemote) {
+              out.bytesSent += r.bytesSent || 0;
+              if (r.kind === "audio") out.audioSent += r.bytesSent || 0;
+              if (r.kind === "video") out.videoSent += r.bytesSent || 0;
+            } else if (r.type === "inbound-rtp") {
+              out.bytesReceived += r.bytesReceived || 0;
+              if (r.kind === "audio") out.audioReceived += r.bytesReceived || 0;
+              if (r.kind === "video") out.videoReceived += r.bytesReceived || 0;
+            }
+          });
+        } catch (e) { }
+        return out;
       }
 
       btnMic.addEventListener("click", () => {
@@ -444,6 +931,7 @@
         if (!track) return;
         track.enabled = !track.enabled;
         btnMic.classList.toggle("off", !track.enabled);
+        wlog("mic " + (track.enabled ? "on" : "off"));
       });
 
       btnCam.addEventListener("click", () => {
@@ -452,12 +940,128 @@
         if (!track) return;
         track.enabled = !track.enabled;
         btnCam.classList.toggle("off", !track.enabled);
+        wlog("cam " + (track.enabled ? "on" : "off"));
+      });
+
+      // ---- speech -> text for the peer ---------------------------------
+      // The other device only ever receives what THIS browser transcribes:
+      // without it a hearing user's voice never reaches a deaf user's screen.
+      function makeRecognition() {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) return null;
+        const rec = new SR();
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.lang = "en-IN";
+        rec.onresult = (event) => {
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const res = event.results[i];
+            const text = (res[0] && res[0].transcript || "").trim();
+            if (!text) continue;
+            if (res.isFinal) {
+              pushLog("speech", "You: " + text);
+              captionLine.textContent = text;
+              captionLine.classList.add("show");
+              clearTimeout(lineTimer);
+              lineTimer = setTimeout(() => captionLine.classList.remove("show"), 6000);
+              if (socket && socket.connected) {
+                socket.emit("speech-transcript", { roomId, text, isFinal: true });
+              }
+            } else {
+              interim += text;
+            }
+          }
+          if (interim) {
+            captionLine.textContent = interim;
+            captionLine.classList.add("show");
+          }
+        };
+        rec.onerror = (e) => {
+          wlog("speech recognition error: " + e.error);
+          if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+            pushLog("system", "Live captions blocked — allow microphone access.");
+            stopStt();
+          }
+        };
+        rec.onend = () => {
+          // Chrome stops after a pause; keep it running while enabled.
+          if (sttOn && stt) {
+            try { stt.start(); } catch (_) { }
+          }
+        };
+        return rec;
+      }
+
+      function startStt() {
+        if (!stt) stt = makeRecognition();
+        if (!stt) {
+          pushLog("system", "Live captions are not supported in this browser (try Chrome).");
+          return;
+        }
+        sttOn = true;
+        btnStt.classList.add("on");
+        try { stt.start(); } catch (_) { }
+        pushLog("system", "Live captions ON — your speech is sent to your peer.");
+      }
+
+      function stopStt() {
+        sttOn = false;
+        btnStt.classList.remove("on");
+        if (stt) { try { stt.stop(); } catch (_) { } }
+      }
+
+      btnStt.addEventListener("click", () => {
+        if (sttOn) stopStt(); else startStt();
+      });
+
+      btnSwap.addEventListener("click", () => {
+        const swapped = stage.classList.toggle("swapped");
+        btnSwap.classList.toggle("on", swapped);
+      });
+
+      btnCap.addEventListener("click", () => {
+        capsOn = !capsOn;
+        btnCap.classList.toggle("off", !capsOn);
+        if (!capsOn) {
+          signBanner.classList.remove("show");
+          captionLine.classList.remove("show");
+          capLog.classList.add("hidden");
+        }
+      });
+
+      btnLeave.addEventListener("click", () => {
+        if (!confirm("End the call? Both sides will be disconnected.")) return;
+        wlog("leave pressed");
+        if (pc) { try { pc.close(); } catch (e) { } pc = null; }
+        if (socket) { try { socket.disconnect(); } catch (e) { } }
+        if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+        localVideo.srcObject = null;
+        remoteStream = null;
+        remoteVideo.srcObject = null;
+        hasRemote = false;
+        leftCall = true;
+        setStatus("Call ended", false);
+        waitingTitle.textContent = "Call ended";
+        waitingSub.textContent = "You left the room. Tap below to rejoin.";
+        permBtn.textContent = "Rejoin the call";
+        permBtn.style.display = "inline-block";
+        errMsg.style.display = "none";
+        waitingEl.classList.remove("hidden");
       });
 
       permBtn.addEventListener("click", async () => {
         const ok = await startMedia();
-        if (ok && socket && socket.connected && !pc) {
-          // Re-announce so an already-present peer triggers a fresh offer toward us
+        if (!ok) return;
+        leftCall = false;
+        waitingSub.innerHTML = DEFAULT_SUB;
+        // Reconnect (leave() dropped the socket) and announce again so an
+        // already-present peer sends us a fresh offer.
+        if (!socket) {
+          connectSocket();
+        } else if (!socket.connected) {
+          socket.connect();
+        } else {
           socket.emit("join-room", { roomId, role: "hearing" });
         }
       });
@@ -473,6 +1077,8 @@
           waitingTitle.textContent = "Camera permission needed";
         }
         connectSocket();
+        initHands();
+        setInterval(recogTick, 260);
       })();
     })();
   </script>

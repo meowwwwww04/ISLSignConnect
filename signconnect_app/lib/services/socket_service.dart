@@ -926,8 +926,19 @@ class SocketService extends ChangeNotifier {
         if (data is Map) {
           _lastRecognizedGesture = data['word']?.toString() ?? "-";
           _gestureConfidence = (data['confidence'] as num?)?.toInt() ?? 0;
-          addTranscript("Peer (ISL Sign)", _lastRecognizedGesture, "deaf");
+          // origin:"self" = the web page recognised THIS device's signs on
+          // the incoming video and echoed them back (the app's own camera
+          // is serving the call, so the phone cannot detect during it).
+          final origin = data['origin']?.toString() ?? '';
+          final tag = origin == 'self' ? 'You (ISL Sign)' : 'Peer (ISL Sign)';
+          addTranscript(tag, _lastRecognizedGesture, "deaf");
           notifyListeners();
+        }
+      });
+
+      socket.on('room-log', (data) {
+        if (data is Map) {
+          debugPrint('[PageLog] ${data['msg']}');
         }
       });
 
@@ -1066,6 +1077,7 @@ class SocketService extends ChangeNotifier {
         case rtc.RTCPeerConnectionState.RTCPeerConnectionStateConnected:
           _iceRestartAttempts = 0;
           addTranscript("System", "WebRTC connected.", "system");
+          _logSenders("connected");
           break;
         case rtc.RTCPeerConnectionState.RTCPeerConnectionStateFailed:
           _isRemoteUserConnected = false;
@@ -1093,9 +1105,15 @@ class SocketService extends ChangeNotifier {
       final pc = await _getOrCreatePeerConnection();
       // Never fire a second offer while one is outstanding or while we are
       // answering — that desynchronises SDP and the call never connects.
+      // NOTE: flutter_webrtc reports null for signalingState until the first
+      // state event lands (i.e. right after the pc is created). Null must be
+      // treated as the initial/stable state, otherwise the very first offer
+      // is silently dropped and the peer waits forever.
+      final state = pc.signalingState;
       if (_makingOffer ||
-          pc.signalingState != rtc.RTCSignalingState.RTCSignalingStateStable) {
-        debugPrint("[WebRTC] offer skipped (state=${pc.signalingState})");
+          (state != null &&
+              state != rtc.RTCSignalingState.RTCSignalingStateStable)) {
+        debugPrint("[WebRTC] offer skipped (state=$state)");
         return;
       }
       _makingOffer = true;
@@ -1113,6 +1131,7 @@ class SocketService extends ChangeNotifier {
           'offer': desc.toMap(),
         });
         debugPrint("[WebRTC] offer sent (iceRestart=$iceRestart)");
+        await _logSenders("after-offer");
       }
     } catch (e) {
       debugPrint("createOffer error: $e");
@@ -1127,8 +1146,14 @@ class SocketService extends ChangeNotifier {
       if (offer is! Map) return;
       final pc = await _getOrCreatePeerConnection();
 
-      final collision =
-          _makingOffer || pc.signalingState != rtc.RTCSignalingState.RTCSignalingStateStable;
+      // Null (initial, pre-first-event) state means no local description is
+      // pending — same reasoning as in _createOfferToPeer, and required here
+      // or an incoming offer right after pc creation is wrongly treated as a
+      // collision and dropped.
+      final inState = pc.signalingState;
+      final collision = _makingOffer ||
+          (inState != null &&
+              inState != rtc.RTCSignalingState.RTCSignalingStateStable);
       if (collision) {
         // Perfect negotiation: the peer with the LARGER socket id is "polite"
         // and rolls back its own offer; the other side ignores the incoming
@@ -1161,6 +1186,7 @@ class SocketService extends ChangeNotifier {
           'answer': desc.toMap(),
         });
         debugPrint("[WebRTC] answer sent");
+        await _logSenders("after-answer");
       }
     } catch (e) {
       debugPrint("handleOffer error: $e");
@@ -1175,8 +1201,34 @@ class SocketService extends ChangeNotifier {
       final pc = _peerConnection;
       if (pc == null) return;
       await pc.setRemoteDescription(rtc.RTCSessionDescription(answer['sdp'] as String, answer['type'] as String));
+      debugPrint("[WebRTC] answer applied (state=${pc.signalingState})");
     } catch (e) {
       debugPrint("handleAnswer error: $e");
+    }
+  }
+
+  /// Diagnostic: which tracks this side is actually sending, and the
+  /// direction of every transceiver. Printed after each negotiation and on
+  /// connect so a one-way-media problem is visible in logcat immediately.
+  Future<void> _logSenders(String context) async {
+    final pc = _peerConnection;
+    if (pc == null) return;
+    try {
+      final senders = await pc.getSenders();
+      for (final s in senders) {
+        final t = s.track;
+        debugPrint("[WebRTC] $context sender kind=${t?.kind ?? '?'} "
+            "track=${t?.id ?? 'null'} enabled=${t?.enabled}");
+      }
+      final transceivers = await pc.getTransceivers();
+      for (final tr in transceivers) {
+        final dir = await tr.getCurrentDirection();
+        debugPrint("[WebRTC] $context transceiver dir=$dir "
+            "senderTrack=${tr.sender.track?.id ?? 'null'} "
+            "recvKind=${tr.receiver.track?.kind ?? '-'}");
+      }
+    } catch (e) {
+      debugPrint("[WebRTC] logSenders error: $e");
     }
   }
 

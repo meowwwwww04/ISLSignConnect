@@ -1,10 +1,13 @@
 /**
  * SignConnect — ML-Powered ISL Gesture Classifier
  *
- * Wraps the Python inference server (inference_server.py) that serves the
- * 42-class MLP model. There is deliberately NO rule-based fallback: the old
- * one guessed words that are not in the model's vocabulary at all (and every
- * open hand came out as "Hello"), which is why recognition looked broken.
+ * Runs the exported 42-class MLP in this browser when isl-model-data.js +
+ * isl-local-inference.js are loaded (bit-for-bit parity with the python
+ * inference server — see parity_test.py), and falls back to posting the
+ * 126-dim landmark vector to inference_server.py otherwise. There is
+ * deliberately NO rule-based fallback: the old one guessed words that are
+ * not in the model's vocabulary at all (and every open hand came out as
+ * "Hello"), which is why recognition looked broken.
  *
  * A prediction is only broadcast when it is confident enough:
  *   confidence >= 0.45, and either >= 0.60 or at least 0.08 ahead of the
@@ -54,8 +57,45 @@ class ISLGestureClassifier {
 
   async classify(multiHandLandmarks) {
     if (!multiHandLandmarks || multiHandLandmarks.length === 0) return null;
-    if (!this.serverAvailable || this.pendingRequest) return null;
+    if (this.pendingRequest) return null;
 
+    // Preferred path: the exported model runs in this browser (same weights
+    // as the python server) — works offline, from https pages, anywhere.
+    let data = null;
+    if (window.ISLLocalPredict && window.ISLLocalPredict.ready()) {
+      try {
+        data = window.ISLLocalPredict.predictFromHands(multiHandLandmarks);
+      } catch (err) {
+        console.warn("[ML Classifier] local inference failed:", err.message, "— trying server");
+      }
+    }
+
+    // Fallback: the python inference server (when isl-model-data.js is
+    // missing or local inference threw).
+    if (!data) {
+      if (!this.serverAvailable) return null;
+      data = await this._predictViaServer(multiHandLandmarks);
+      if (!data) return null;
+    }
+
+    if (!this._accept(data)) return null;
+
+    const now = Date.now();
+    const cooldown = (data.word === this.lastDetectedWord)
+      ? this.sameSignCooldown
+      : this.differentSignCooldown;
+    if (now - this.lastDetectedTime <= cooldown) return null;
+
+    this.lastDetectedWord = data.word;
+    this.lastDetectedTime = now;
+    return {
+      word: data.word,
+      label: data.word,
+      confidence: Math.round(Number(data.confidence) * 100),
+    };
+  }
+
+  async _predictViaServer(multiHandLandmarks) {
     // 126-dim feature vector: hand1(63) + hand2(63, zero-padded).
     const featureVector = [];
     for (let h = 0; h < 2; h++) {
@@ -79,26 +119,9 @@ class ISLGestureClassifier {
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
-      this.pendingRequest = false;
       this.serverAvailable = true;
-
-      if (!this._accept(data)) return null;
-
-      const now = Date.now();
-      const cooldown = (data.word === this.lastDetectedWord)
-        ? this.sameSignCooldown
-        : this.differentSignCooldown;
-      if (now - this.lastDetectedTime <= cooldown) return null;
-
-      this.lastDetectedWord = data.word;
-      this.lastDetectedTime = now;
-      return {
-        word: data.word,
-        label: data.word,
-        confidence: Math.round(Number(data.confidence) * 100),
-      };
+      return data;
     } catch (err) {
-      this.pendingRequest = false;
       if (this.serverAvailable) {
         console.warn("[ML Classifier] Server unreachable:", err.message,
           "— set the URL with window.setInfServerUrl(...)");
@@ -107,6 +130,8 @@ class ISLGestureClassifier {
       // Probe again shortly instead of guessing silently.
       setTimeout(() => { this.serverAvailable = true; }, 5000);
       return null;
+    } finally {
+      this.pendingRequest = false;
     }
   }
 }
